@@ -4,6 +4,17 @@ Read files from chosen folders (repos) in a browser, mainly on the phone, while 
 
 Built with [Bun](https://bun.sh). One server file, no build step, no client framework.
 
+<p>
+  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: one card per folder with its newest files">
+  <img src="docs/screenshots/phone-markdown.png" width="200" alt="A Markdown file with front matter, a table and a task list">
+  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: recent files, folders, sort and filter">
+  <img src="docs/screenshots/phone-dark-code.png" width="200" alt="Highlighted code in dark mode">
+</p>
+
+<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left, sorted by modified time">
+
+<sub>Screenshots use made-up demo folders.</sub>
+
 ## Open it
 
 - On the machine: **http://127.0.0.1:4321**

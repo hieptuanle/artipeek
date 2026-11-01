@@ -724,7 +724,9 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 function shell(opts: { title: string; bodyClass: string; data?: Record<string, string>; aside?: string; main: string; nonce: string }) {
   const data = Object.entries(opts.data ?? {}).map(([k, v]) => ` data-${k}="${esc(v)}"`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="referrer" content="no-referrer"><meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/_/icon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="apple-touch-icon" href="/_/apple-touch-icon.png"><link rel="manifest" href="/_/manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="artipeek">
 <title>${esc(opts.title)} · artipeek</title><link rel="stylesheet" href="/_/style.css"></head>
 <body class="${opts.bodyClass}"${data}>${opts.aside ?? ""}<div id="scrim"></div><main id="main">${opts.main}</main>
 <script nonce="${opts.nonce}">${CLIENT_JS}</script></body></html>`;
@@ -746,6 +748,30 @@ function homePage(nonce: string, scope: Scope): string {
 
 // ---------- http ----------
 const SEC_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store" };
+
+// App icons (assets/), read once at start. Same rules as every other path (the public listener still needs a login).
+const ASSET_DIR = path.join(import.meta.dir, "assets");
+const MANIFEST = JSON.stringify({
+  name: "artipeek", short_name: "artipeek", start_url: "/", display: "standalone",
+  background_color: "#0d1117", theme_color: "#0d1117",
+  icons: [
+    { src: "/_/icon-192.png", sizes: "192x192", type: "image/png" },
+    { src: "/_/icon-512.png", sizes: "512x512", type: "image/png" },
+    { src: "/_/icon.svg", sizes: "any", type: "image/svg+xml" },
+  ],
+});
+const STATIC = new Map<string, { body: Uint8Array | string; type: string }>();
+for (const [url, file, type] of [
+  ["/_/icon.svg", "icon.svg", "image/svg+xml"],
+  ["/favicon.ico", "favicon.ico", "image/x-icon"],
+  ["/_/apple-touch-icon.png", "apple-touch-icon.png", "image/png"],
+  ["/apple-touch-icon.png", "apple-touch-icon.png", "image/png"], // iOS also asks for this path by itself
+  ["/_/icon-192.png", "icon-192.png", "image/png"],
+  ["/_/icon-512.png", "icon-512.png", "image/png"],
+] as const) {
+  try { STATIC.set(url, { body: new Uint8Array(readFileSync(path.join(ASSET_DIR, file))), type }); } catch { console.log(`artipeek: icon ${file} missing`); }
+}
+STATIC.set("/_/manifest.webmanifest", { body: MANIFEST, type: "application/manifest+json" });
 const HTML = { ...SEC_HEADERS, "Content-Type": "text/html; charset=utf-8" };
 const pageCsp = (nonce: string) =>
   `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
@@ -758,6 +784,8 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
   const url = new URL(req.url);
   const p = url.pathname;
 
+  const st = STATIC.get(p);
+  if (st) return new Response(st.body, { headers: { ...SEC_HEADERS, "Content-Type": st.type, "Cache-Control": "private, max-age=86400", ...(st.type === "image/svg+xml" ? { "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" } : {}) } });
   if (p === "/_/style.css") return new Response(CSS, { headers: { ...SEC_HEADERS, "Content-Type": "text/css; charset=utf-8" } });
   if (p === "/" || p === "") {
     const nonce = randomBytes(16).toString("base64");

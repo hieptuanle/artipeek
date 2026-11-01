@@ -1,4 +1,4 @@
-# artipeek
+# <img src="assets/icon.svg" width="40" align="top" alt=""> artipeek
 
 Read files from chosen folders (repos) in a browser, mainly on the phone, while agents write them. It is read-only and live: when a file changes, the open page updates by itself.
 

@@ -75,6 +75,14 @@ grep -q 'escape.txt' <<<"$page" && bad "outside symlink listed" || ok "outside s
 grep -q 'data-path="\.env"\|server\.key\|id_ed25519' <<<"$page" && bad "denied file listed" || ok "deny list: .env, *.key, id_ed25519 hidden (even tracked)"
 grep -q 'data-path="\.env\.example"' <<<"$page" && ok "deny list: .env.example still shown" || bad ".env.example missing"
 
+# --- icons ---
+for pt in "/_/icon.svg image/svg+xml" "/favicon.ico image/x-icon" "/_/apple-touch-icon.png image/png" "/apple-touch-icon.png image/png" "/_/icon-192.png image/png" "/_/icon-512.png image/png" "/_/manifest.webmanifest application/manifest+json"; do
+  set -- $pt; r=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$B$1")
+  [ "$r" = "200 $2" ] && ok "icon: $1" || bad "icon $1: $r"
+done
+grep -q 'rel="icon" href="/_/icon.svg"' <<<"$page" && grep -q 'rel="apple-touch-icon"' <<<"$page" && grep -q 'rel="manifest"' <<<"$page" && ok "icon links in page head" || bad "icon links"
+curl -s "$B/_/manifest.webmanifest" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["start_url"]=="/" and len(d["icons"])==3' && ok "manifest is valid JSON" || bad "manifest json"
+
 # --- markdown ---
 grep -q '<table>' <<<"$page" && grep -q 'hljs-built_in\|hljs-string' <<<"$page" \
   && grep -q 'task-list-item' <<<"$page" && grep -q 'class="footnotes' <<<"$page" \
@@ -162,6 +170,7 @@ for _ in $(seq 1 50); do [ "$(curl -s -o /dev/null -w '%{http_code}' "$P/")" = 4
 pc() { curl -s --path-as-is -o /dev/null -w '%{http_code}' "${@:2}" "$P$1"; }   # pc <path> [curl args]
 hv() { echo "Cf-Access-Jwt-Assertion: $(cat "$TOK/$1.jwt")"; }
 [ "$(pc /)" = 403 ] && ok "public: no token -> 403" || bad "public no token"
+[ "$(pc /_/icon.svg)" = 403 ] && ok "public: icons also need a login" || bad "public icon without token"
 [ "$(pc /r/one/view/docs/note.md)" = 403 ] && ok "public: no token on a file -> 403" || bad "public no token file"
 for t in badsig wrongaud wrongiss expired wrongemail algnone; do
   c=$(pc /r/one/view/docs/note.md -H "$(hv $t)"); [ "$c" = 403 ] && ok "public: $t -> 403" || bad "public $t gave $c"

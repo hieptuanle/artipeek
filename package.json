@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun server.ts",
     "dev": "bun --watch server.ts --port 4322",
-    "test": "bash test.sh"
+    "test": "bash test.sh",
+    "postinstall": "sh scripts/install-hooks.sh"
   },
   "dependencies": {
     "highlight.js": "^11.12.0",

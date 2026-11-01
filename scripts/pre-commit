@@ -1,0 +1,31 @@
+#!/bin/sh
+# Pre-commit: scan the staged changes for secrets with Infisical (gitleaks rules).
+# Installed by `bun install` (scripts/install-hooks.sh) as a wrapper that runs this file.
+# - Fails closed: if the scanner is missing or errors, the commit is blocked too.
+# - --redact: found secrets are never printed in clear text.
+# Skip once (only if you are sure): git commit --no-verify
+# Turn off:                          git config hooks.infisical-scan false
+if [ "$(git config --bool hooks.infisical-scan)" = "false" ]; then
+  echo "warning: infisical secrets scan is turned off (git config hooks.infisical-scan)" >&2
+  exit 0
+fi
+
+INF=$(command -v infisical || true)
+[ -z "$INF" ] && [ -x "$HOME/.local/share/pnpm/bin/infisical" ] && INF="$HOME/.local/share/pnpm/bin/infisical"
+if [ -z "$INF" ]; then
+  echo "Commit blocked: infisical CLI not found, so the secrets scan could not run." >&2
+  echo "Install it: https://infisical.com/docs/cli/overview  (e.g. npm i -g @infisical/cli)" >&2
+  exit 1
+fi
+
+INFISICAL_DISABLE_TELEMETRY=1 "$INF" scan git-changes --staged --redact -v --silent --no-color
+code=$?
+if [ $code -eq 0 ]; then exit 0; fi
+if [ $code -eq 1 ]; then
+  echo "" >&2
+  echo "Commit blocked: the Infisical scan found secrets in the staged changes (shown redacted above)." >&2
+  echo "Remove them (and rotate any real secret). A false positive can go in .infisical-scan.toml or a baseline." >&2
+else
+  echo "Commit blocked: the Infisical scan failed (exit $code)." >&2
+fi
+exit 1

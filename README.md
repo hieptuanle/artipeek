@@ -152,6 +152,14 @@ rm -f ~/.local/bin/artipeek
 rm -rf ~/projects/artipeek ~/.config/artipeek   # first undo the public hostname (above)
 ```
 
+## Contributing: secrets scan before each commit
+
+`bun install` also installs a git pre-commit hook (`scripts/install-hooks.sh`, run by `postinstall`). On each commit it runs `scripts/pre-commit`, which scans the staged changes with the [Infisical CLI](https://infisical.com/docs/cli/overview) (`infisical scan git-changes --staged --redact`).
+
+- A found secret blocks the commit and is shown redacted. If the scanner is missing or fails, the commit is blocked too.
+- An existing pre-commit hook that it did not install is left alone (it prints the line to add instead).
+- Skip once: `git commit --no-verify`. Turn off: `git config hooks.infisical-scan false`.
+
 ## License
 
 MIT, see `LICENSE`.

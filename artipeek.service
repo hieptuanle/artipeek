@@ -1,0 +1,15 @@
+[Unit]
+Description=artipeek: read-only preview of chosen folders (127.0.0.1 + tailnet, personal devices only)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/artipeek
+ExecStart=%h/.bun/bin/bun server.ts --config %h/.config/artipeek/config.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

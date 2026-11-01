@@ -1,0 +1,22 @@
+{
+  "port": 4321,
+  "tailnet": true,
+  "tailnets": ["example-tailnet.ts.net"],
+  "allowDevices": ["my-phone", "my-laptop"],
+  "roots": [
+    { "name": "notes", "path": "~/notes" },
+    { "name": "my-project", "path": "~/projects/my-project" }
+  ],
+  "public": {
+    "port": 4323,
+    "hostname": "artipeek.example.com",
+    "teamDomain": "<team>.cloudflareaccess.com",
+    "aud": "<Access application AUD tag>",
+    "emails": ["you@example.com"],
+    "roots": ["notes"],
+    "cloudflare": {
+      "accountId": "<account id>", "zoneId": "<zone id>", "tunnelId": "<tunnel id>",
+      "appId": "<Access app id>", "policyId": "<Access policy id>", "dnsId": "<DNS record id>"
+    }
+  }
+}

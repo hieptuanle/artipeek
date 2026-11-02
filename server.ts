@@ -465,7 +465,7 @@ async function renderMain(root: Root, rel: string, abs: string): Promise<string>
   const head = `<div class="filebar">${MENU_BTN}<span class="crumbs" title="${esc(root.name + "/" + rel)}"><span class="rootname">${esc(root.name)}/</span>${dir !== "." ? `<span class="dirname">${esc(dir)}/</span>` : ""}<b>${esc(path.posix.basename(rel))}</b></span><span class="meta">${fmtSize(e.size)} · ${ageTag(e.mtime)} · <a href="${raw}" target="_blank">raw</a></span></div>`;
 
   if (ext === "html" || ext === "htm") {
-    return `${head}<iframe class="htmlframe" sandbox="" referrerpolicy="no-referrer" src="${raw}?t=${Date.now()}"></iframe>`;
+    return `${head}<iframe class="htmlframe" sandbox="allow-scripts" referrerpolicy="no-referrer" src="${raw}?t=${Date.now()}"></iframe>`;
   }
   if (IMAGE_EXT.has(ext)) {
     return `${head}<div class="imgwrap"><img src="${raw}?t=${Date.now()}" alt="${esc(rel)}"></div>`;
@@ -775,6 +775,10 @@ STATIC.set("/_/manifest.webmanifest", { body: MANIFEST, type: "application/manif
 const HTML = { ...SEC_HEADERS, "Content-Type": "text/html; charset=utf-8" };
 const pageCsp = (nonce: string) =>
   `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+// Raw files: sandboxed (opaque origin) with no fetch/XHR/WebSocket and no remote scripts, images or fonts.
+// HTML also gets allow-scripts + inline scripts, never allow-same-origin, so a page can't read artipeek's cookie or other files.
+const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:";
+const RAW_CSP_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:";
 const notFound = () => new Response("Not found", { status: 404, headers: SEC_HEADERS });
 const decode = (s: string): string | null => { try { return decodeURIComponent(s); } catch { return null; } };
 
@@ -833,8 +837,9 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
       headers: {
         ...SEC_HEADERS,
         "Content-Type": type,
-        // Even opened directly, raw files get no scripts and an opaque origin.
-        "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:",
+        // Even opened directly, raw files get an opaque origin (no cookies, no same-origin reads) and no network.
+        // HTML pages may run their own inline scripts (animations, toggles) inside that box; nothing else may.
+        "Content-Security-Policy": ext === "html" || ext === "htm" ? RAW_CSP_HTML : RAW_CSP,
       },
     });
   }

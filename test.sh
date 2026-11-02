@@ -93,9 +93,13 @@ grep -q '>abs</a>' <<<"$page" && grep -q 'href="/r/one/view/docs/other.md">abs' 
 
 # --- html in sandboxed iframe ---
 h=$(curl -s "$R/view/messages/2026-10-31-x/email.html")
-grep -q '<iframe class="htmlframe" sandbox=""' <<<"$h" && ok "html: sandboxed iframe" || bad "html iframe"
+grep -q '<iframe class="htmlframe" sandbox="allow-scripts"' <<<"$h" && ! grep -q 'allow-same-origin' <<<"$h" \
+  && ok "html: sandboxed iframe (scripts yes, same origin no)" || bad "html iframe"
 csp=$(curl -s -D - -o /dev/null "$R/raw/messages/2026-10-31-x/email.html" | tr -d '\r' | grep -i '^content-security-policy')
-grep -q 'sandbox' <<<"$csp" && ok "raw html: CSP sandbox header" || bad "raw csp"
+grep -q "sandbox allow-scripts;" <<<"$csp" && grep -q "default-src 'none'" <<<"$csp" && grep -q "script-src 'unsafe-inline'" <<<"$csp" \
+  && ! grep -qi 'allow-same-origin\|connect-src\|https:' <<<"$csp" && ok "raw html: CSP sandbox, inline scripts only, no network" || bad "raw csp: $csp"
+csp=$(curl -s -D - -o /dev/null "$R/raw/docs/other.md" | tr -d '\r' | grep -i '^content-security-policy')
+grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|script-src' <<<"$csp" && ok "raw non-html: still no scripts" || bad "raw md csp: $csp"
 
 # --- path safety ---
 for p in "/r/one/view/..%2f..%2fetc/passwd" "/r/one/raw/..%2f..%2fetc/passwd" "/r/one/raw/%2fetc%2fpasswd" \

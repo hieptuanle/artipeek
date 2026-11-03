@@ -43,6 +43,7 @@ echo "# Other" > "$ROOT/docs/other.md"
 echo '<html><body><h1>Email draft</h1><script>alert(1)</script></body></html>' > "$ROOT/messages/2026-10-31-x/email.html"
 # status lines (as agents write them): folder README, change note waiting for a yes, draft, no status
 printf '# Reply to the client\n\nSTATUS: **SENT 2026-10-31 09:40 UTC** via email\n\nBody.\n' > "$ROOT/messages/2026-10-31-x/README.md"
+echo 'p { color: red }' > "$ROOT/messages/2026-10-31-x/email.css"
 mkdir -p "$ROOT/messages/2026-11-02-y"
 printf '# Change note\n\n- Owner: me\n- Status: for your yes\n' > "$ROOT/messages/2026-11-02-y/change-note.md"
 printf '# Reply\n\nStatus: drafted 2026-11-03; not sent.\n' > "$ROOT/messages/2026-11-03-reply.md"
@@ -118,6 +119,10 @@ grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|scr
 sp=$(curl -s "$R/view/messages/2026-10-31-x/email.html")
 grep -q '<summary><span class="fi fi-dir c-dir" aria-hidden="true"></span><span class="name">2026-10-31-x</span><span class="st st-sent" title="SENT 2026-10-31 09:40 UTC via email">sent</span>' <<<"$sp" \
   && ok "status: folder row shows README status (sent)" || bad "status folder row"
+grep -q 'data-path="messages/2026-10-31-x/email.html" class="current"><span class="fi fi-html c-html" aria-hidden="true"></span><span class="name">email.html</span><span class="st st-sent" title="SENT 2026-10-31 09:40 UTC via email (from README.md)">sent</span>' <<<"$sp" \
+  && ok "status: email.html row gets its folder's label (tooltip says from README.md)" || bad "status email.html row"
+grep -q 'data-path="messages/2026-10-31-x/email.css"><span class="fi fi-code c-css" aria-hidden="true"></span><span class="name">email.css</span></a>' <<<"$sp" \
+  && ok "status: other files in the folder get no label" || bad "status email.css row"
 grep -q 'id="stbar" class="statusbar"><span class="st st-sent"' <<<"$sp" && grep -q 'class="stfrom" href="/r/one/view/messages/2026-10-31-x/README.md">README.md' <<<"$sp" \
   && ok "status: email page shows the folder's status, from README.md" || bad "status bar on email"
 grep -q 'data-path="messages/2026-11-03-reply.md".*<span class="st st-draft"[^>]*>draft</span>' <<<"$sp" && ok "status: 'drafted; not sent' -> draft" || bad "status draft"
@@ -132,6 +137,9 @@ grep -q 'class="rootcard"' <<<"$(curl -s "$B/")" && grep -q 'st-sent\|st-draft\|
 grep -q 'class="fi fi-html c-html"' <<<"$sp" && grep -q 'class="fi fi-md c-md"' <<<"$sp" && grep -q 'class="fi fi-dir c-dir"' <<<"$sp" \
   && grep -q '<b>email.html</b>' <<<"$sp" && ok "icons: file, folder and current-file icons in the page" || bad "icons in page"
 css=$(curl -s "$B/_/style.css"); grep -q '.fi-md { --i:url("data:image/svg+xml,' <<<"$css" && grep -q 'mask:var(--i)' <<<"$css" && ok "icons: CSS mask icons" || bad "icon css"
+grep -q 'details\[open\] > summary > .fi-dir { --i:url("data:image/svg+xml,' <<<"$css" && ok "icons: open folders get the open-folder icon" || bad "open folder icon"
+grep -q '#tree li.dir > details > summary { display:flex;[^}]*list-style:none' <<<"$css" && grep -q '#tree li.dir > details > summary::-webkit-details-marker { display:none; }' <<<"$css" \
+  && ok "folders: no disclosure arrow" || bad "folder arrow css"
 
 # --- path safety ---
 for p in "/r/one/view/..%2f..%2fetc/passwd" "/r/one/raw/..%2f..%2fetc/passwd" "/r/one/raw/%2fetc%2fpasswd" \

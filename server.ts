@@ -160,8 +160,8 @@ function readStatus(abs: string, rel: string): Status | null {
 }
 const isMd = (rel: string) => /\.(md|markdown)$/i.test(rel);
 const dirOf = (rel: string) => { const i = rel.lastIndexOf("/"); return i < 0 ? "" : rel.slice(0, i); };
-const statusBadge = (st: Status | null | undefined) =>
-  st ? `<span class="st st-${st.kind}" title="${esc(st.text)}">${esc(st.label)}</span>` : "";
+const statusBadge = (st: Status | null | undefined, rel = "") =>
+  st ? `<span class="st st-${st.kind}" title="${esc(st.text + (rel && st.from !== rel ? ` (from ${path.posix.basename(st.from)})` : ""))}">${esc(st.label)}</span>` : "";
 
 // ---------- roots ----------
 type Entry = { rel: string; mtime: number; size: number };
@@ -298,6 +298,12 @@ class Root {
   // A file's own status, else its folder's (e.g. an email .html next to a README.md with "Status: sent").
   statusFor(rel: string): Status | undefined {
     return this.status.get(rel) ?? this.dirStatus.get(dirOf(rel));
+  }
+
+  // The label on a file row in lists: its own status, or for an .html file (an email draft) its folder's.
+  // Other files in the folder (css, pdf, zip…) get none, so a folder's rows don't all repeat it.
+  rowStatus(rel: string): Status | undefined {
+    return this.status.get(rel) ?? (/\.html?$/i.test(rel) ? this.dirStatus.get(dirOf(rel)) : undefined);
   }
 
   // The only way a request reaches a file: listed, and still resolves inside the root.
@@ -585,11 +591,9 @@ function sortFrom(req: Request, url: URL): { sort: Sort; fromParam: boolean } {
 const sortCookie = (s: Sort) => `${SORT_COOKIE}=${s}; Path=/; Max-Age=31536000; SameSite=Lax`;
 
 function renderSidebar(root: Root, current: string, sort: Sort = "name"): string {
-  // Tree rows show a file's own status (its folder row shows the folder's); Recent also shows the folder's.
-  const own = (rel: string) => root.status.get(rel);
-  const link = (rel: string, label: string, withAge = false, st: (rel: string) => Status | undefined = own) =>
-    `<a href="${root.base}/view/${encPath(rel)}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(st(rel))}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
-  const rec = root.recent().map((e) => `<li>${link(e.rel, e.rel, true, (r) => root.statusFor(r))}</li>`).join("");
+  const link = (rel: string, label: string, withAge = false) =>
+    `<a href="${root.base}/view/${encPath(rel)}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(root.rowStatus(rel), rel)}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
+  const rec = root.recent().map((e) => `<li>${link(e.rel, e.rel, true)}</li>`).join("");
   const byTime = sort === "mtime";
   const walk = (n: Node, prefix: string): string => {
     // Name: folders first, then files, natural order. Modified: folders and files together, newest first.
@@ -600,7 +604,7 @@ function renderSidebar(root: Root, current: string, sort: Sort = "name"): string
       const open = current.startsWith(p + "/") ? " open" : "";
       items.push({
         kind: 0, name: d, mtime: child.mtime,
-        html: () => `<li class="dir"><details data-dir="${esc(p)}"${open}><summary>${DIR_ICON}<span class="name">${esc(d)}</span>${byTime ? ageTag(child.mtime) : ""}${statusBadge(root.dirStatus.get(p))}</summary><ul>${walk(child, p)}</ul></details></li>`,
+        html: () => `<li class="dir"><details data-dir="${esc(p)}"${open}><summary>${DIR_ICON}<span class="name">${esc(d)}</span>${statusBadge(root.dirStatus.get(p))}${byTime ? ageTag(child.mtime) : ""}</summary><ul>${walk(child, p)}</ul></details></li>`,
       });
     }
     for (const f of n.files) {
@@ -744,7 +748,9 @@ details.roots a.current { color:var(--accent); font-weight:600; }
 #tree > ul.tree, #tree > details > ul { padding-left:4px; }
 #tree summary { display:list-item; cursor:pointer; padding:1px 4px; border-radius:4px; user-select:none; color:var(--fg); }
 #tree summary .name { display:inline; }
-#tree summary .fi { margin-right:5px; }
+#tree li.dir > details > summary { display:flex; align-items:center; gap:6px; padding:1px 6px; list-style:none; }
+#tree li.dir > details > summary::-webkit-details-marker { display:none; }
+#tree li.dir > details > summary .age { float:none; margin-right:0; }
 /* status labels */
 .st { flex:none; font-size:10.5px; line-height:1; font-weight:600; padding:2px 6px; border-radius:999px; white-space:nowrap; letter-spacing:.02em; border:1px solid transparent; }
 .st-sent, .st-done { color:#1a7f37; background:#dafbe1; border-color:#aceebb; }
@@ -757,7 +763,6 @@ details.roots a.current { color:var(--accent); font-weight:600; }
   .st-waiting { color:#d29922; background:rgba(187,128,9,.15); border-color:rgba(187,128,9,.4); }
   .st-other { color:#4493f8; background:rgba(56,139,253,.15); border-color:rgba(56,139,253,.4); }
 }
-#tree summary .st { float:right; margin:2px 6px 0 0; } /* after the age in the HTML, so it sits left of it */
 .statusbar { display:flex; align-items:center; gap:8px; margin:-8px 0 14px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--side); font-size:13px; }
 .statusbar .sttext { flex:1; min-width:0; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .statusbar .stfrom { flex:none; font-size:12px; color:var(--muted); }
@@ -829,7 +834,7 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
   .filebar .dirname, .filebar .rootname { display:none; }
   .filebar .meta { font-size:12px; }
   #tree { font-size:15px; }
-  #tree a, #tree summary { padding:6px 8px; }
+  #tree a, #tree summary, #tree li.dir > details > summary { padding:6px 8px; }
   #sort button { font-size:12px; padding:4px 9px; }
   #filter { font-size:16px; } /* no iOS zoom on focus */
   pre.hljs { font-size:12px; }
@@ -857,7 +862,7 @@ function filePage(root: Root, current: string, mainHtml: string, nonce: string, 
 
 function homePage(nonce: string, scope: Scope): string {
   const cards = visibleRoots(scope).map((r) => {
-    const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}">${iconFor(e.rel, extOf(e.rel))}<span class="name">${esc(e.rel)}</span>${statusBadge(r.statusFor(e.rel))}${ageTag(e.mtime)}</a></li>`).join("");
+    const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}">${iconFor(e.rel, extOf(e.rel))}<span class="name">${esc(e.rel)}</span>${statusBadge(r.rowStatus(e.rel), e.rel)}${ageTag(e.mtime)}</a></li>`).join("");
     return `<section class="rootcard"><h2><a href="${r.base}/">${esc(r.name)}</a><span class="count">${r.files.size} files</span></h2><ul>${rec}</ul></section>`;
   }).join("");
   return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });

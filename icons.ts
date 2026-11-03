@@ -7,6 +7,7 @@ const DOC = "M3.5 1.5h6l3 3v10h-9z M9.5 1.5v3h3";
 
 export const GLYPHS: Record<string, string> = {
   dir: "<path d='M1.5 4.2c0-.6.4-1 1-1h3.4l1.6 1.7h6c.6 0 1 .4 1 1v6.4c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z' fill='#000' fill-opacity='.3'/>",
+  "dir-open": "<path d='M1.5 12V4.2c0-.6.4-1 1-1h3.4l1.6 1.7h4.9c.6 0 1 .4 1 1v1.3'/><path d='M1.5 12.8 3.4 7.6c.1-.4.5-.6.9-.6h9.8c.6 0 1 .6.8 1.1l-1.7 4.3c-.2.4-.5.6-.9.6H2c-.3 0-.5-.1-.5-.2z' fill='#000' fill-opacity='.3'/>",
   text: `<path d='${DOC} M5.6 8h4.8 M5.6 10.3h4.8 M5.6 12.6h3'/>`,
   md: "<rect x='1' y='3.5' width='14' height='9' rx='1.6'/><path d='M3.6 10V6l2 2.3 2-2.3v4 M11.6 6v4 M9.9 8.4l1.7 1.7 1.7-1.7'/>",
   html: "<path d='M5 4.5 1.5 8 5 11.5 M11 4.5 14.5 8 11 11.5 M9.3 3 6.7 13'/>",
@@ -87,7 +88,9 @@ export const DIR_ICON = `<span class="fi fi-dir c-dir" aria-hidden="true"></span
 export const ICON_CSS =
   `.fi { display:inline-block; width:16px; height:16px; flex:none; background:currentColor; color:var(--muted); vertical-align:-3px; -webkit-mask:var(--i) center/contain no-repeat; mask:var(--i) center/contain no-repeat; }\n` +
   Object.entries(GLYPHS).map(([k, g]) => `.fi-${k} { --i:url("data:image/svg+xml,${encodeURIComponent(W(g))}"); }`).join("\n") + "\n" +
-  Object.entries(COLORS).map(([k, c]) => `.fi.c-${k} { color:${c}; }`).join("\n") + "\n";
+  Object.entries(COLORS).map(([k, c]) => `.fi.c-${k} { color:${c}; }`).join("\n") + "\n" +
+  // An open folder shows the open-folder glyph.
+  `details[open] > summary > .fi-dir { --i:url("data:image/svg+xml,${encodeURIComponent(W(GLYPHS["dir-open"]))}"); }\n`;
 
 // For the preview sheet only.
 export const svgFor = (glyph: string) => W(GLYPHS[glyph]);

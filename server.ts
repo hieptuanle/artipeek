@@ -125,10 +125,12 @@ const fullTime = (ms: number) => {
 };
 const ageTag = (ms: number) => `<span class="age" data-mtime="${Math.round(ms)}" title="${esc(fullTime(ms))}">${age(ms)}</span>`;
 
-// ---------- status ("Status:" line near the top of a Markdown file) ----------
-// Agents write e.g. "STATUS: **SENT 2026-10-15 …**", "- Status: for your yes", "Status: drafted …; not sent".
-// The first such line in the first 20 lines gives the file a status. A folder takes the status of its
-// README.md / index.md or, if every Markdown file directly inside it has the same status, that status.
+// ---------- status ----------
+// Markdown: the first "Status:" line in the first 20 lines (not in a code block), e.g. "STATUS: **SENT 2026-10-15 …**",
+// "- Status: for your yes", "Status: drafted …; not sent".
+// HTML (email drafts): <meta name="x-status" content="sent">, with optional x-sent-at, x-to, x-subject.
+// A folder takes the status of its README.md / index.md / email.html / index.html or, if every Markdown and
+// HTML file directly in it has the same status, that status.
 type StatusKind = "sent" | "done" | "waiting" | "draft" | "other";
 type Status = { kind: StatusKind; label: string; text: string; from: string };
 const STATUS_RE = /^\s{0,3}(?:[-*>]\s+)?[*_]{0,2}status[*_]{0,2}\s*:\s*[*_]{0,2}\s*(\S.*)$/i;
@@ -140,15 +142,42 @@ function classifyStatus(raw: string, from: string): Status {
   else if (/\bnot (yet )?sent\b|^(draft|drafted|drafting|started|wip|todo|to do|in progress|writing)\b/.test(t)) kind = "draft";
   else if (/^(for (your )?(yes|review|approval|sign-?off)|waiting|awaiting|pending|needs? (review|approval))\b/.test(t)) kind = "waiting";
   else if (/^(done|ok|complete|completed|approved|merged|shipped|closed|resolved)\b/.test(t)) kind = "done";
-  const label = kind !== "other" ? kind : (/^[a-z][a-z-]*/.exec(t)?.[0] ?? "status").slice(0, 14);
+  const label = kind !== "other" ? kind : (/^(?:(?:never|not|no)\s+)?[a-z][a-z-]*/.exec(t)?.[0] ?? "status").slice(0, 14);
   return { kind, label, text, from };
 }
-function readStatus(abs: string, rel: string): Status | null {
-  let head = "";
+function readHead(abs: string, n: number): string | null {
   try {
     const fd = openSync(abs, "r");
-    try { const b = Buffer.alloc(4096); head = b.subarray(0, readSync(fd, b, 0, 4096, 0)).toString("utf8"); } finally { closeSync(fd); }
+    try { const b = Buffer.alloc(n); return b.subarray(0, readSync(fd, b, 0, n, 0)).toString("utf8"); } finally { closeSync(fd); }
   } catch { return null; }
+}
+const attr = (tag: string, name: string) => new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i").exec(tag);
+const decodeEnt = (s: string) => s.replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+function fmtWhen(v: string): string {
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? v : new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+// <meta name="x-status" content="sent"> (+ x-sent-at, x-to, x-subject) in the first 16 kB of an HTML file.
+function readHtmlStatus(abs: string, rel: string): Status | null {
+  const head = readHead(abs, 16384);
+  if (!head) return null;
+  const meta: Record<string, string> = {};
+  for (const m of head.matchAll(/<meta\b[^>]*>/gi)) {
+    const name = attr(m[0], "name"), content = attr(m[0], "content");
+    if (name && content) meta[(name[2] ?? name[3]).toLowerCase()] = decodeEnt(content[2] ?? content[3]).trim();
+  }
+  const status = meta["x-status"];
+  if (!status) return null;
+  const parts = [status];
+  if (meta["x-sent-at"]) parts.push(fmtWhen(meta["x-sent-at"]));
+  if (meta["x-to"]) parts.push(`to ${meta["x-to"]}`);
+  if (meta["x-subject"]) parts.push(`“${meta["x-subject"]}”`);
+  return classifyStatus(parts.join(" · "), rel);
+}
+function readStatus(abs: string, rel: string): Status | null {
+  if (isHtml(rel)) return readHtmlStatus(abs, rel);
+  const head = readHead(abs, 4096);
+  if (head === null) return null;
   let fence = false; // skip code blocks
   for (const line of head.split(/\r?\n/).slice(0, 20)) {
     if (/^\s{0,3}(```|~~~)/.test(line)) { fence = !fence; continue; }
@@ -159,6 +188,7 @@ function readStatus(abs: string, rel: string): Status | null {
   return null;
 }
 const isMd = (rel: string) => /\.(md|markdown)$/i.test(rel);
+const isHtml = (rel: string) => /\.html?$/i.test(rel);
 const dirOf = (rel: string) => { const i = rel.lastIndexOf("/"); return i < 0 ? "" : rel.slice(0, i); };
 const statusBadge = (st: Status | null | undefined, rel = "") =>
   st ? `<span class="st st-${st.kind}" title="${esc(st.text + (rel && st.from !== rel ? ` (from ${path.posix.basename(st.from)})` : ""))}">${esc(st.label)}</span>` : "";
@@ -271,7 +301,7 @@ class Root {
     const cache = new Map<string, { key: string; st: Status | null }>();
     const own = new Map<string, Status>();
     for (const [rel, e] of this.files) {
-      if (!isMd(rel)) continue;
+      if (!isMd(rel) && !isHtml(rel)) continue;
       const key = `${e.mtime}:${e.size}`;
       const old = this.statusCache.get(rel);
       const st = old && old.key === key ? old.st : readStatus(path.join(this.dir, rel), rel);
@@ -285,7 +315,8 @@ class Root {
     for (const [rel, st] of own) { const d = dirOf(rel); if (!byDir.has(d)) byDir.set(d, []); byDir.get(d)!.push(st); }
     const dirs = new Map<string, Status>();
     for (const [d, list] of byDir) {
-      const main = list.find((st) => /^(readme|index)\.(md|markdown)$/i.test(st.from.slice(d ? d.length + 1 : 0)));
+      const name = (st: Status) => st.from.slice(d ? d.length + 1 : 0).toLowerCase();
+      const main = ["readme.md", "readme.markdown", "index.md", "email.html", "index.html", "email.htm"].map((n) => list.find((st) => name(st) === n)).find(Boolean);
       if (main) dirs.set(d, main);
       else if (list.length === mdCount.get(d) && list.every((st) => st.kind === list[0].kind && st.label === list[0].label))
         dirs.set(d, [...list].sort((a, b) => collator.compare(a.from, b.from))[0]);
@@ -303,7 +334,7 @@ class Root {
   // The label on a file row in lists: its own status, or for an .html file (an email draft) its folder's.
   // Other files in the folder (css, pdf, zip…) get none, so a folder's rows don't all repeat it.
   rowStatus(rel: string): Status | undefined {
-    return this.status.get(rel) ?? (/\.html?$/i.test(rel) ? this.dirStatus.get(dirOf(rel)) : undefined);
+    return this.status.get(rel) ?? (isHtml(rel) ? this.dirStatus.get(dirOf(rel)) : undefined);
   }
 
   // The only way a request reaches a file: listed, and still resolves inside the root.
@@ -702,7 +733,7 @@ const CLIENT_JS = `
     es.addEventListener("change", async (ev) => {
       const paths = JSON.parse(ev.data);
       const curDir = cur.includes("/") ? cur.slice(0, cur.lastIndexOf("/")) : "";
-      const nextToCur = (p) => /\\.(md|markdown)$/i.test(p) && (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") === curDir;
+      const nextToCur = (p) => /\\.(md|markdown|html?)$/i.test(p) && (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") === curDir;
       if (cur && !paths.includes(cur) && paths.some(nextToCur)) {
         const r = await fetch(base + "/part/status/" + cur.split("/").map(encodeURIComponent).join("/"));
         const el = document.getElementById("stbar");

@@ -44,6 +44,20 @@ echo '<html><body><h1>Email draft</h1><script>alert(1)</script></body></html>' >
 # status lines (as agents write them): folder README, change note waiting for a yes, draft, no status
 printf '# Reply to the client\n\nSTATUS: **SENT 2026-10-31 09:40 UTC** via email\n\nBody.\n' > "$ROOT/messages/2026-10-31-x/README.md"
 echo 'p { color: red }' > "$ROOT/messages/2026-10-31-x/email.css"
+# emails that carry their own status in <meta name="x-status">
+mkdir -p "$ROOT/messages/2026-11-04-z" "$ROOT/messages/2026-11-05-w" "$ROOT/messages/2026-11-06-v" "$ROOT/messages/2026-11-07-u"
+cat > "$ROOT/messages/2026-11-04-z/email.html" <<'EOF'
+<html><head><meta charset="utf-8">
+<meta name="x-status" content="sent">
+<meta name="x-sent-at" content="Fri, 16 Oct 2026 13:45:49 -0700">
+<meta name="x-to" content="dana@example.com">
+<meta content="Weekly update &amp; next steps" name="x-subject">
+</head><body><p>Hi Dana</p></body></html>
+EOF
+echo '# Notes' > "$ROOT/messages/2026-11-04-z/notes.md"
+echo '<html><head><meta name="x-status" content="draft"></head><body>x</body></html>' > "$ROOT/messages/2026-11-05-w/email.html"
+echo "<html><head><meta name='x-status' content='never sent'></head><body>x</body></html>" > "$ROOT/messages/2026-11-06-v/email.html"
+echo '<html><head><meta name="x-status" content="merged"></head><body>x</body></html>' > "$ROOT/messages/2026-11-07-u/email.html"
 mkdir -p "$ROOT/messages/2026-11-02-y"
 printf '# Change note\n\n- Owner: me\n- Status: for your yes\n' > "$ROOT/messages/2026-11-02-y/change-note.md"
 printf '# Reply\n\nStatus: drafted 2026-11-03; not sent.\n' > "$ROOT/messages/2026-11-03-reply.md"
@@ -123,6 +137,13 @@ grep -q 'data-path="messages/2026-10-31-x/email.html" class="current"><span clas
   && ok "status: email.html row gets its folder's label (tooltip says from README.md)" || bad "status email.html row"
 grep -q 'data-path="messages/2026-10-31-x/email.css"><span class="fi fi-code c-css" aria-hidden="true"></span><span class="name">email.css</span></a>' <<<"$sp" \
   && ok "status: other files in the folder get no label" || bad "status email.css row"
+grep -q 'data-path="messages/2026-11-04-z/email.html"><span class="fi fi-html c-html" aria-hidden="true"></span><span class="name">email.html</span><span class="st st-sent" title="sent · 2026-10-16 20:45 UTC · to dana@example.com · “Weekly update &amp; next steps”">sent</span>' <<<"$sp" \
+  && ok "status: <meta x-status> on the email itself (time in UTC, to, subject)" || bad "status meta sent"
+grep -qE 'data-dir="messages/2026-11-04-z"( open)?><summary><span class="fi fi-dir c-dir" aria-hidden="true"></span><span class="name">2026-11-04-z</span><span class="st st-sent"' <<<"$sp" && ok "status: folder takes its email.html status" || bad "status folder from email.html"
+grep -q 'data-path="messages/2026-11-05-w/email.html".*st-draft[^>]*>draft<' <<<"$sp" && grep -q 'data-path="messages/2026-11-06-v/email.html".*st-other[^>]*>never sent<' <<<"$sp" \
+  && grep -q 'data-path="messages/2026-11-07-u/email.html".*st-done[^>]*>done<' <<<"$sp" && ok "status: meta draft / never sent / merged -> draft / never sent / done" || bad "status meta kinds"
+grep -q 'class="statusbar"><span class="st st-sent"[^>]*>sent</span><span class="sttext">sent · 2026-10-16 20:45 UTC · to dana@example.com' <<<"$(curl -s "$R/view/messages/2026-11-04-z/email.html")" \
+  && ok "status: email page bar shows sent time and recipient" || bad "status meta bar"
 grep -q 'id="stbar" class="statusbar"><span class="st st-sent"' <<<"$sp" && grep -q 'class="stfrom" href="/r/one/view/messages/2026-10-31-x/README.md">README.md' <<<"$sp" \
   && ok "status: email page shows the folder's status, from README.md" || bad "status bar on email"
 grep -q 'data-path="messages/2026-11-03-reply.md".*<span class="st st-draft"[^>]*>draft</span>' <<<"$sp" && ok "status: 'drafted; not sent' -> draft" || bad "status draft"

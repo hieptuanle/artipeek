@@ -33,9 +33,10 @@ Tip: on the phone, add the page to the home screen.
 - Other text: highlighted code. Images: shown. Other binary files: size + download.
 - **Icons**: every file has a small icon for its type (Markdown, HTML, code by language, shell, config, images, PDF, tables, archives, diffs, SQL, media, lock files, text). Folders show an open or a closed folder (no arrows); tap to open or close.
 - **Status labels**: a Markdown file with a `Status:` line near the top (first 20 lines, not in a code block) gets a label: **sent**, **waiting**, **draft**, **done**, or the first word for anything else. These all work: `Status: sent 2026-11-01`, `STATUS: **SENT …**`, `- Status: for your yes`, `**Status:** drafted; not sent`.
-  - A folder takes the status of its `README.md` / `index.md`, or, if every Markdown file directly in it has the same status, that one. So an email draft (`email.html`) next to a `README.md` that says `Status: sent …` shows **sent**: on the folder row and on the `.html` file's row (the tooltip says where it comes from). Other files in that folder (`.css`, `.pdf`, …) get no label, so the list doesn't repeat it.
+  - An HTML file (an email draft) can carry its own status in its `<head>`: `<meta name="x-status" content="sent">`, plus optional `x-sent-at` (shown in UTC), `x-to` and `x-subject`. The file page shows them in the status bar.
+  - A folder takes the status of its `README.md`, `index.md`, `email.html` or `index.html` (in that order), or, if every Markdown and HTML file directly in it has the same status, that one. So an email draft (`email.html`) next to a `README.md` that says `Status: sent …` shows **sent**: on the folder row and on the `.html` file's row (the tooltip says where it comes from). Other files in that folder (`.css`, `.pdf`, …) get no label, so the list doesn't repeat it.
   - Labels show in the file list, in Recent and on the home page. On the file page, a bar under the file name shows the full status line and where it comes from. It updates live when the file changes.
-  - Rules: `sent`/`posted`/`replied` → **sent**; `not sent`, `draft`, `drafted`, `started`, `wip` → **draft**; `for your yes`, `for review`, `waiting`, `pending` → **waiting**; `done`, `ok`, `approved`, `merged` → **done**.
+  - Rules: `sent`/`posted`/`replied` → **sent**; `not sent`, `draft`, `drafted`, `started`, `wip` → **draft**; `for your yes`, `for review`, `waiting`, `pending` → **waiting**; `done`, `ok`, `approved`, `merged` → **done**; anything else shows its first word (`never sent` and `not approved` keep two).
 
 ## Install
 

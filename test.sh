@@ -41,6 +41,12 @@ Footnote[^1].
 EOF
 echo "# Other" > "$ROOT/docs/other.md"
 echo '<html><body><h1>Email draft</h1><script>alert(1)</script></body></html>' > "$ROOT/messages/2026-10-31-x/email.html"
+# status lines (as agents write them): folder README, change note waiting for a yes, draft, no status
+printf '# Reply to the client\n\nSTATUS: **SENT 2026-10-31 09:40 UTC** via email\n\nBody.\n' > "$ROOT/messages/2026-10-31-x/README.md"
+mkdir -p "$ROOT/messages/2026-11-02-y"
+printf '# Change note\n\n- Owner: me\n- Status: for your yes\n' > "$ROOT/messages/2026-11-02-y/change-note.md"
+printf '# Reply\n\nStatus: drafted 2026-11-03; not sent.\n' > "$ROOT/messages/2026-11-03-reply.md"
+printf '# Notes\n\nNo status here.\n\n```\nstatus: ok\n```\n' > "$ROOT/messages/notes.md"
 echo "secret" > "$OUTSIDE/passwd"
 ln -s "$OUTSIDE/passwd" "$ROOT/docs/escape.txt"
 echo "ignored/" > "$ROOT/.gitignore"
@@ -67,7 +73,7 @@ c=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$R/")
 [[ "$c" == "302 "*"/r/one/view/"* ]] && ok "folder root redirects to a file" || bad "root redirect: $c"
 page=$(curl -s "$R/view/docs/note.md")
 grep -q 'id="tree"' <<<"$page" && grep -q 'data-dir="messages/2026-10-31-x"' <<<"$page" \
-  && grep -q 'class="current"><span class="name">note.md' <<<"$page" && ok "sidebar renders, current file highlighted" || bad "sidebar"
+  && grep -q 'class="current"><span class="fi fi-md c-md" aria-hidden="true"></span><span class="name">note.md' <<<"$page" && ok "sidebar renders, current file highlighted" || bad "sidebar"
 grep -q 'class="roots"' <<<"$page" && ok "folder switcher present" || bad "folder switcher"
 grep -q 'data-menu' <<<"$page" && curl -s "$B/_/style.css" | grep -q 'body.nav-open aside' && ok "phone menu button + drawer CSS" || bad "phone menu"
 grep -q 'hidden.md' <<<"$page" && bad "gitignored file listed" || ok "gitignored file not listed"
@@ -95,11 +101,37 @@ grep -q '>abs</a>' <<<"$page" && grep -q 'href="/r/one/view/docs/other.md">abs' 
 h=$(curl -s "$R/view/messages/2026-10-31-x/email.html")
 grep -q '<iframe class="htmlframe" sandbox="allow-scripts"' <<<"$h" && ! grep -q 'allow-same-origin' <<<"$h" \
   && ok "html: sandboxed iframe (scripts yes, same origin no)" || bad "html iframe"
-csp=$(curl -s -D - -o /dev/null "$R/raw/messages/2026-10-31-x/email.html" | tr -d '\r' | grep -i '^content-security-policy')
+rawcsp() { curl -s -D - -o /dev/null "$@" | tr -d '\r' | grep -i '^content-security-policy'; }
+csp=$(rawcsp -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$R/raw/messages/2026-10-31-x/email.html")
 grep -q "sandbox allow-scripts;" <<<"$csp" && grep -q "default-src 'none'" <<<"$csp" && grep -q "script-src 'unsafe-inline'" <<<"$csp" \
-  && ! grep -qi 'allow-same-origin\|connect-src\|https:' <<<"$csp" && ok "raw html: CSP sandbox, inline scripts only, no network" || bad "raw csp: $csp"
-csp=$(curl -s -D - -o /dev/null "$R/raw/docs/other.md" | tr -d '\r' | grep -i '^content-security-policy')
+  && ! grep -qi 'allow-same-origin\|connect-src\|https:' <<<"$csp" && ok "raw html in artipeek's own frame: inline scripts only, no network" || bad "raw csp: $csp"
+for hdrs in "" "Sec-Fetch-Dest: document" "Sec-Fetch-Dest: iframe|Sec-Fetch-Site: cross-site"; do
+  args=(); IFS='|' read -ra hs <<<"$hdrs"; for x in "${hs[@]}"; do args+=(-H "$x"); done
+  csp=$(rawcsp "${args[@]}" "$R/raw/messages/2026-10-31-x/email.html")
+  grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|script-src' <<<"$csp" \
+    && ok "raw html opened ${hdrs:-with no fetch headers}: no scripts" || bad "raw html [$hdrs]: $csp"
+done
+csp=$(rawcsp -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$R/raw/docs/other.md")
 grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|script-src' <<<"$csp" && ok "raw non-html: still no scripts" || bad "raw md csp: $csp"
+
+# --- status labels ---
+sp=$(curl -s "$R/view/messages/2026-10-31-x/email.html")
+grep -q '<summary><span class="fi fi-dir c-dir" aria-hidden="true"></span><span class="name">2026-10-31-x</span><span class="st st-sent" title="SENT 2026-10-31 09:40 UTC via email">sent</span>' <<<"$sp" \
+  && ok "status: folder row shows README status (sent)" || bad "status folder row"
+grep -q 'id="stbar" class="statusbar"><span class="st st-sent"' <<<"$sp" && grep -q 'class="stfrom" href="/r/one/view/messages/2026-10-31-x/README.md">README.md' <<<"$sp" \
+  && ok "status: email page shows the folder's status, from README.md" || bad "status bar on email"
+grep -q 'data-path="messages/2026-11-03-reply.md".*<span class="st st-draft"[^>]*>draft</span>' <<<"$sp" && ok "status: 'drafted; not sent' -> draft" || bad "status draft"
+grep -q 'data-dir="messages/2026-11-02-y"><summary>.*st-waiting[^>]*>waiting<' <<<"$sp" && ok "status: '- Status: for your yes' -> waiting (folder agrees)" || bad "status waiting"
+grep -qE 'data-dir="messages"( open)?><summary><span class="fi fi-dir c-dir" aria-hidden="true"></span><span class="name">messages</span></summary>' <<<"$sp" && ok "status: no folder label when only some files have one" || bad "status messages folder"
+grep -q 'data-path="messages/notes.md"><span class="fi fi-md c-md" aria-hidden="true"></span><span class="name">notes.md</span></a>' <<<"$sp" && ok "status: no status line (or only in a code block) -> no label" || bad "status none"
+grep -q '<div id="stbar" hidden></div>' <<<"$(curl -s "$R/view/messages/notes.md")" && ok "status: empty bar when none" || bad "empty stbar"
+c=$(curl -s "$R/part/status/messages/2026-10-31-x/email.html"); grep -q 'st-sent' <<<"$c" && ok "status: /part/status" || bad "part status: $c"
+grep -q 'class="rootcard"' <<<"$(curl -s "$B/")" && grep -q 'st-sent\|st-draft\|st-waiting' <<<"$(curl -s "$B/")" && ok "status: home cards show labels" || bad "home labels"
+
+# --- file-type icons ---
+grep -q 'class="fi fi-html c-html"' <<<"$sp" && grep -q 'class="fi fi-md c-md"' <<<"$sp" && grep -q 'class="fi fi-dir c-dir"' <<<"$sp" \
+  && grep -q '<b>email.html</b>' <<<"$sp" && ok "icons: file, folder and current-file icons in the page" || bad "icons in page"
+css=$(curl -s "$B/_/style.css"); grep -q '.fi-md { --i:url("data:image/svg+xml,' <<<"$css" && grep -q 'mask:var(--i)' <<<"$css" && ok "icons: CSS mask icons" || bad "icon css"
 
 # --- path safety ---
 for p in "/r/one/view/..%2f..%2fetc/passwd" "/r/one/raw/..%2f..%2fetc/passwd" "/r/one/raw/%2fetc%2fpasswd" \
@@ -157,6 +189,11 @@ kill $CP $CP2 2>/dev/null
 got=""
 for _ in $(seq 1 20); do grep -q 'new.md' <<<"$(curl -s "$R/part/tree?current=")" && { got=1; break; }; sleep 0.1; done
 [ -n "$got" ] && ok "sidebar shows new file" || bad "new file missing"
+SSE3="$T/sse3"; curl -s -N --max-time 4 "$R/events" > "$SSE3" & CP=$!
+sleep 0.5; sed -i 's/STATUS: \*\*SENT 2026-10-31 09:40 UTC\*\* via email/Status: waiting for a reply/' "$ROOT/messages/2026-10-31-x/README.md"
+got=""; for _ in $(seq 1 20); do grep -q '^event: tree' "$SSE3" && { got=1; break; }; sleep 0.1; done
+kill $CP 2>/dev/null
+[ -n "$got" ] && grep -q 'st-waiting' <<<"$(curl -s "$R/part/status/messages/2026-10-31-x/email.html")" && ok "status: change is live (tree event + new status)" || bad "status live"
 grep -q 'X=1\|secret' "$T/server.log" && bad "file contents in log" || ok "no file contents in log"
 
 # --- public listener (Cloudflare Access JWT), with a fake certs endpoint and local RSA keys ---

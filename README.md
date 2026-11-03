@@ -5,13 +5,13 @@ Read files from chosen folders (repos) in a browser, mainly on the phone, while 
 Built with [Bun](https://bun.sh). One server file, no build step, no client framework.
 
 <p>
-  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: one card per folder with its newest files">
-  <img src="docs/screenshots/phone-markdown.png" width="200" alt="A Markdown file with front matter, a table and a task list">
-  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: recent files, folders, sort and filter">
+  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: one card per folder with its newest files, file-type icons and status labels">
+  <img src="docs/screenshots/phone-markdown.png" width="200" alt="A Markdown file with its status bar, front matter and a table">
+  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: folders and files with icons and status labels (sent, waiting, draft)">
   <img src="docs/screenshots/phone-dark-code.png" width="200" alt="Highlighted code in dark mode">
 </p>
 
-<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left, sorted by modified time">
+<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left. An email draft shows its status, read from the README.md next to it">
 
 <sub>Screenshots use made-up demo folders.</sub>
 
@@ -29,8 +29,13 @@ Tip: on the phone, add the page to the home screen.
 - **File page (`/r/<folder>/view/<path>`)**: the file, rendered on the server. On a phone, tap ☰ for the file list (it slides in). On a laptop, the list sits on the left.
 - File list: switch folders (name at the top, ▾), sort by **Name** or **Modified** (newest first; a folder counts as new as its newest file), filter box, "Recent" (10 newest files). The sort choice is kept in a cookie.
 - `.md`: GitHub-style (tables, task lists, code highlight, footnotes, heading anchors), front matter as a small table, relative links and images, Obsidian `[[name]]` links.
-- `.html` (e.g. email drafts, explainers): shown as the page itself, in a sandboxed box. The page's own inline scripts run (animations, toggles), but in a separate origin with no network: it can't read your login cookie, other files, or call out.
+- `.html` (e.g. email drafts, explainers): shown as the page itself, in a sandboxed box. Inside the file page, the page's own inline scripts run (animations, toggles), in a separate origin with no network: it can't read your login cookie or other files, load anything, or leave for another site. Opened on its own with "raw", it runs no scripts.
 - Other text: highlighted code. Images: shown. Other binary files: size + download.
+- **Icons**: every file and folder has a small icon for its type (Markdown, HTML, code by language, shell, config, images, PDF, tables, archives, diffs, SQL, media, lock files, text).
+- **Status labels**: a Markdown file with a `Status:` line near the top (first 20 lines, not in a code block) gets a label: **sent**, **waiting**, **draft**, **done**, or the first word for anything else. These all work: `Status: sent 2026-11-01`, `STATUS: **SENT …**`, `- Status: for your yes`, `**Status:** drafted; not sent`.
+  - A folder takes the status of its `README.md` / `index.md`, or, if every Markdown file directly in it has the same status, that one. So an email draft (`email.html`) next to a `README.md` that says `Status: sent …` shows **sent**.
+  - Labels show in the file list, in Recent and on the home page. On the file page, a bar under the file name shows the full status line and where it comes from. It updates live when the file changes.
+  - Rules: `sent`/`posted`/`replied` → **sent**; `not sent`, `draft`, `drafted`, `started`, `wip` → **draft**; `for your yes`, `for review`, `waiting`, `pending` → **waiting**; `done`, `ok`, `approved`, `merged` → **done**.
 
 ## Install
 
@@ -89,7 +94,7 @@ artipeek logs -f | restart | test | undo-config
 - **Read-only**: GET/HEAD only, others get 405.
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
-- **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network); `.html` adds `allow-scripts` with inline scripts only, never `allow-same-origin`.
+- **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network). `.html` gets `allow-scripts` with inline scripts only when the browser loads it in artipeek's own file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`); that page's `frame-src 'self'` keeps the frame from navigating away. Never `allow-same-origin`.
 - It never logs file contents and sends nothing anywhere (it only fetches the Cloudflare Access public keys when `public` is set).
 
 ## Public hostname (Cloudflare Tunnel + Access)
@@ -139,7 +144,7 @@ bun install   # once
 bash test.sh  # or: artipeek test
 ```
 
-The tests use temporary folders and a temporary config, never your repos. They cover: the home page; the sidebar, folder switcher and phone menu; Markdown (tables, code, tasks, footnotes, front matter, wikilinks, relative and `/` links); HTML in a sandbox (inline scripts on, same origin and network off; other raw files no scripts); path escapes, other folders, `.git`, ignored and denied files → 404; POST → 405; adding a folder by editing the config; refusing a bad name or the home folder; sort and cookie; live events per folder within 2 s; no file contents in the log.
+The tests use temporary folders and a temporary config, never your repos. They cover: the home page; the sidebar, folder switcher and phone menu; Markdown (tables, code, tasks, footnotes, front matter, wikilinks, relative and `/` links); HTML in a sandbox (inline scripts only inside the file page; opened directly or framed by another site: no scripts; other raw files: no scripts); status labels (file, folder, README, code blocks ignored, live update); file-type icons; path escapes, other folders, `.git`, ignored and denied files → 404; POST → 405; adding a folder by editing the config; refusing a bad name or the home folder; sort and cookie; live events per folder within 2 s; no file contents in the log.
 
 The public listener is tested with a local fake certs endpoint and locally made RSA keys (`test-access.ts`): no token, bad signature, wrong aud/iss, expired, wrong email, `alg: none` → 403; valid header or cookie → 200; folders not in `public.roots` → 404 and not listed; path escapes → 404; key rotation; SSE with a token. This part waits ~30 s on purpose (key refetch limit). The admin CLI is tested on a temp config. If Tailscale is up, they also check the device rules: allowed device 200, other device 403, wrong tailnet 403, localhost 200.
 

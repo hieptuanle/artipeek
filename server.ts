@@ -11,7 +11,7 @@
 //
 //   bun server.ts [--config FILE] [--port N]
 
-import { watch, realpathSync, lstatSync, statSync, readdirSync, readFileSync, existsSync, type FSWatcher } from "node:fs";
+import { watch, realpathSync, lstatSync, statSync, readdirSync, readFileSync, existsSync, openSync, readSync, closeSync, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -21,6 +21,7 @@ import anchor from "markdown-it-anchor";
 import footnote from "markdown-it-footnote";
 import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js";
+import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
 
 // ---------- args + config ----------
 function arg(name: string, def?: string): string | undefined {
@@ -124,6 +125,44 @@ const fullTime = (ms: number) => {
 };
 const ageTag = (ms: number) => `<span class="age" data-mtime="${Math.round(ms)}" title="${esc(fullTime(ms))}">${age(ms)}</span>`;
 
+// ---------- status ("Status:" line near the top of a Markdown file) ----------
+// Agents write e.g. "STATUS: **SENT 2026-10-15 …**", "- Status: for your yes", "Status: drafted …; not sent".
+// The first such line in the first 20 lines gives the file a status. A folder takes the status of its
+// README.md / index.md or, if every Markdown file directly inside it has the same status, that status.
+type StatusKind = "sent" | "done" | "waiting" | "draft" | "other";
+type Status = { kind: StatusKind; label: string; text: string; from: string };
+const STATUS_RE = /^\s{0,3}(?:[-*>]\s+)?[*_]{0,2}status[*_]{0,2}\s*:\s*[*_]{0,2}\s*(\S.*)$/i;
+function classifyStatus(raw: string, from: string): Status {
+  const text = raw.replace(/[*_`]/g, "").replace(/\s+/g, " ").trim().slice(0, 300);
+  const t = text.toLowerCase();
+  let kind: StatusKind = "other";
+  if (/^(sent|posted|delivered|replied|published)\b/.test(t)) kind = "sent";
+  else if (/\bnot (yet )?sent\b|^(draft|drafted|drafting|started|wip|todo|to do|in progress|writing)\b/.test(t)) kind = "draft";
+  else if (/^(for (your )?(yes|review|approval|sign-?off)|waiting|awaiting|pending|needs? (review|approval))\b/.test(t)) kind = "waiting";
+  else if (/^(done|ok|complete|completed|approved|merged|shipped|closed|resolved)\b/.test(t)) kind = "done";
+  const label = kind !== "other" ? kind : (/^[a-z][a-z-]*/.exec(t)?.[0] ?? "status").slice(0, 14);
+  return { kind, label, text, from };
+}
+function readStatus(abs: string, rel: string): Status | null {
+  let head = "";
+  try {
+    const fd = openSync(abs, "r");
+    try { const b = Buffer.alloc(4096); head = b.subarray(0, readSync(fd, b, 0, 4096, 0)).toString("utf8"); } finally { closeSync(fd); }
+  } catch { return null; }
+  let fence = false; // skip code blocks
+  for (const line of head.split(/\r?\n/).slice(0, 20)) {
+    if (/^\s{0,3}(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const m = STATUS_RE.exec(line);
+    if (m) return classifyStatus(m[1], rel);
+  }
+  return null;
+}
+const isMd = (rel: string) => /\.(md|markdown)$/i.test(rel);
+const dirOf = (rel: string) => { const i = rel.lastIndexOf("/"); return i < 0 ? "" : rel.slice(0, i); };
+const statusBadge = (st: Status | null | undefined) =>
+  st ? `<span class="st st-${st.kind}" title="${esc(st.text)}">${esc(st.label)}</span>` : "";
+
 // ---------- roots ----------
 type Entry = { rel: string; mtime: number; size: number };
 type Node = { dirs: Map<string, Node>; files: string[]; mtime: number }; // mtime = newest file inside
@@ -131,6 +170,11 @@ type Node = { dirs: Map<string, Node>; files: string[]; mtime: number }; // mtim
 class Root {
   files = new Map<string, Entry>();
   byBase = new Map<string, string[]>();
+  status = new Map<string, Status>(); // Markdown file -> its own status
+  dirStatus = new Map<string, Status>(); // folder ("" = top) -> status
+  private statusCache = new Map<string, { key: string; st: Status | null }>();
+  private statusSig = "";
+  private lastStatusSig = "";
   clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   private pending = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -142,6 +186,7 @@ class Root {
     this.base = `/r/${encodeURIComponent(name)}`;
     this.rebuild();
     this.lastRecent = this.recentSig();
+    this.lastStatusSig = this.statusSig;
     try {
       this.watcher = watch(dir, { recursive: true }, (_ev, n) => this.onFs(n));
     } catch (e) {
@@ -217,7 +262,42 @@ class Root {
         this.byBase.get(k)!.push(rel);
       }
     }
+    this.readStatuses();
     return changed;
+  }
+
+  // Re-reads only Markdown files whose mtime/size changed.
+  private readStatuses() {
+    const cache = new Map<string, { key: string; st: Status | null }>();
+    const own = new Map<string, Status>();
+    for (const [rel, e] of this.files) {
+      if (!isMd(rel)) continue;
+      const key = `${e.mtime}:${e.size}`;
+      const old = this.statusCache.get(rel);
+      const st = old && old.key === key ? old.st : readStatus(path.join(this.dir, rel), rel);
+      cache.set(rel, { key, st });
+      if (st) own.set(rel, st);
+    }
+    this.statusCache = cache;
+    const byDir = new Map<string, Status[]>();
+    const mdCount = new Map<string, number>();
+    for (const rel of cache.keys()) mdCount.set(dirOf(rel), (mdCount.get(dirOf(rel)) ?? 0) + 1);
+    for (const [rel, st] of own) { const d = dirOf(rel); if (!byDir.has(d)) byDir.set(d, []); byDir.get(d)!.push(st); }
+    const dirs = new Map<string, Status>();
+    for (const [d, list] of byDir) {
+      const main = list.find((st) => /^(readme|index)\.(md|markdown)$/i.test(st.from.slice(d ? d.length + 1 : 0)));
+      if (main) dirs.set(d, main);
+      else if (list.length === mdCount.get(d) && list.every((st) => st.kind === list[0].kind && st.label === list[0].label))
+        dirs.set(d, [...list].sort((a, b) => collator.compare(a.from, b.from))[0]);
+    }
+    this.status = own;
+    this.dirStatus = dirs;
+    this.statusSig = [...own].map(([r, st]) => `${r}=${st.kind}:${st.label}`).sort().join("\n");
+  }
+
+  // A file's own status, else its folder's (e.g. an email .html next to a README.md with "Status: sent").
+  statusFor(rel: string): Status | undefined {
+    return this.status.get(rel) ?? this.dirStatus.get(dirOf(rel));
   }
 
   // The only way a request reaches a file: listed, and still resolves inside the root.
@@ -250,8 +330,9 @@ class Root {
     this.pending = new Set();
     const setChanged = this.rebuild();
     const sig = this.recentSig();
-    if (setChanged || sig !== this.lastRecent) this.broadcast("tree", {});
+    if (setChanged || sig !== this.lastRecent || this.statusSig !== this.lastStatusSig) this.broadcast("tree", {});
     this.lastRecent = sig;
+    this.lastStatusSig = this.statusSig;
     if (changed.length) this.broadcast("change", changed);
   }
 
@@ -457,12 +538,21 @@ function frontMatter(src: string): { fm: string; body: string } {
 // ---------- page parts ----------
 const MENU_BTN = `<button type="button" class="menu" aria-label="Files" data-menu>☰</button>`;
 
+// The status of the file (or of its folder), under the file bar. Always present (maybe empty) so the page
+// can swap it live when a Markdown file next to it changes.
+function statusBar(root: Root, rel: string): string {
+  const st = root.statusFor(rel);
+  if (!st) return `<div id="stbar" hidden></div>`;
+  const src = st.from === rel ? "" : ` <a class="stfrom" href="${root.base}/view/${encPath(st.from)}">${esc(path.posix.basename(st.from))}</a>`;
+  return `<div id="stbar" class="statusbar">${statusBadge(st)}<span class="sttext">${esc(st.text)}</span>${src}</div>`;
+}
+
 async function renderMain(root: Root, rel: string, abs: string): Promise<string> {
   const e = root.files.get(rel)!;
   const ext = extOf(rel);
   const raw = `${root.base}/raw/${encPath(rel)}`;
   const dir = path.posix.dirname(rel);
-  const head = `<div class="filebar">${MENU_BTN}<span class="crumbs" title="${esc(root.name + "/" + rel)}"><span class="rootname">${esc(root.name)}/</span>${dir !== "." ? `<span class="dirname">${esc(dir)}/</span>` : ""}<b>${esc(path.posix.basename(rel))}</b></span><span class="meta">${fmtSize(e.size)} · ${ageTag(e.mtime)} · <a href="${raw}" target="_blank">raw</a></span></div>`;
+  const head = `<div class="filebar">${MENU_BTN}<span class="crumbs" title="${esc(root.name + "/" + rel)}">${iconFor(rel, ext)} <span class="rootname">${esc(root.name)}/</span>${dir !== "." ? `<span class="dirname">${esc(dir)}/</span>` : ""}<b>${esc(path.posix.basename(rel))}</b></span><span class="meta">${fmtSize(e.size)} · ${ageTag(e.mtime)} · <a href="${raw}" target="_blank">raw</a></span></div>${statusBar(root, rel)}`;
 
   if (ext === "html" || ext === "htm") {
     return `${head}<iframe class="htmlframe" sandbox="allow-scripts" referrerpolicy="no-referrer" src="${raw}?t=${Date.now()}"></iframe>`;
@@ -495,9 +585,11 @@ function sortFrom(req: Request, url: URL): { sort: Sort; fromParam: boolean } {
 const sortCookie = (s: Sort) => `${SORT_COOKIE}=${s}; Path=/; Max-Age=31536000; SameSite=Lax`;
 
 function renderSidebar(root: Root, current: string, sort: Sort = "name"): string {
-  const link = (rel: string, label: string, withAge = false) =>
-    `<a href="${root.base}/view/${encPath(rel)}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}><span class="name">${esc(label)}</span>${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
-  const rec = root.recent().map((e) => `<li>${link(e.rel, e.rel, true)}</li>`).join("");
+  // Tree rows show a file's own status (its folder row shows the folder's); Recent also shows the folder's.
+  const own = (rel: string) => root.status.get(rel);
+  const link = (rel: string, label: string, withAge = false, st: (rel: string) => Status | undefined = own) =>
+    `<a href="${root.base}/view/${encPath(rel)}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(st(rel))}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
+  const rec = root.recent().map((e) => `<li>${link(e.rel, e.rel, true, (r) => root.statusFor(r))}</li>`).join("");
   const byTime = sort === "mtime";
   const walk = (n: Node, prefix: string): string => {
     // Name: folders first, then files, natural order. Modified: folders and files together, newest first.
@@ -508,7 +600,7 @@ function renderSidebar(root: Root, current: string, sort: Sort = "name"): string
       const open = current.startsWith(p + "/") ? " open" : "";
       items.push({
         kind: 0, name: d, mtime: child.mtime,
-        html: () => `<li class="dir"><details data-dir="${esc(p)}"${open}><summary><span class="name">${esc(d)}</span>${byTime ? ageTag(child.mtime) : ""}</summary><ul>${walk(child, p)}</ul></details></li>`,
+        html: () => `<li class="dir"><details data-dir="${esc(p)}"${open}><summary>${DIR_ICON}<span class="name">${esc(d)}</span>${byTime ? ageTag(child.mtime) : ""}${statusBadge(root.dirStatus.get(p))}</summary><ul>${walk(child, p)}</ul></details></li>`,
       });
     }
     for (const f of n.files) {
@@ -605,6 +697,13 @@ const CLIENT_JS = `
     const es = new EventSource(base + "/events");
     es.addEventListener("change", async (ev) => {
       const paths = JSON.parse(ev.data);
+      const curDir = cur.includes("/") ? cur.slice(0, cur.lastIndexOf("/")) : "";
+      const nextToCur = (p) => /\\.(md|markdown)$/i.test(p) && (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") === curDir;
+      if (cur && !paths.includes(cur) && paths.some(nextToCur)) {
+        const r = await fetch(base + "/part/status/" + cur.split("/").map(encodeURIComponent).join("/"));
+        const el = document.getElementById("stbar");
+        if (r.ok && el) el.outerHTML = await r.text();
+      }
       if (cur && paths.includes(cur)) {
         const r = await fetch(base + "/part/main/" + cur.split("/").map(encodeURIComponent).join("/"));
         if (r.ok) { const y = scrollY; main.innerHTML = await r.text(); scrollTo(0, y); }
@@ -619,7 +718,7 @@ const CLIENT_JS = `
 })();
 `;
 
-const CSS = `
+const CSS = ICON_CSS + `
 :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
 @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --side:#151b23; --line:#30363d; --accent:#4493f8; --cur:#1f3a5f; --code:#151b23; } }
 * { box-sizing: border-box; }
@@ -645,8 +744,26 @@ details.roots a.current { color:var(--accent); font-weight:600; }
 #tree > ul.tree, #tree > details > ul { padding-left:4px; }
 #tree summary { display:list-item; cursor:pointer; padding:1px 4px; border-radius:4px; user-select:none; color:var(--fg); }
 #tree summary .name { display:inline; }
+#tree summary .fi { margin-right:5px; }
+/* status labels */
+.st { flex:none; font-size:10.5px; line-height:1; font-weight:600; padding:2px 6px; border-radius:999px; white-space:nowrap; letter-spacing:.02em; border:1px solid transparent; }
+.st-sent, .st-done { color:#1a7f37; background:#dafbe1; border-color:#aceebb; }
+.st-waiting { color:#9a6700; background:#fff8c5; border-color:#f2e08b; }
+.st-draft { color:var(--muted); background:var(--side); border-color:var(--line); }
+.st-other { color:#0969da; background:#ddf4ff; border-color:#b6e3ff; }
+.st-sent::before, .st-done::before { content:"✓ "; }
+@media (prefers-color-scheme: dark) {
+  .st-sent, .st-done { color:#3fb950; background:rgba(46,160,67,.15); border-color:rgba(46,160,67,.4); }
+  .st-waiting { color:#d29922; background:rgba(187,128,9,.15); border-color:rgba(187,128,9,.4); }
+  .st-other { color:#4493f8; background:rgba(56,139,253,.15); border-color:rgba(56,139,253,.4); }
+}
+#tree summary .st { float:right; margin:2px 6px 0 0; } /* after the age in the HTML, so it sits left of it */
+.statusbar { display:flex; align-items:center; gap:8px; margin:-8px 0 14px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--side); font-size:13px; }
+.statusbar .sttext { flex:1; min-width:0; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.statusbar .stfrom { flex:none; font-size:12px; color:var(--muted); }
+.statusbar .stfrom::before { content:"from "; }
 #tree li.dir > details > summary { font-weight:500; }
-#tree a { display:flex; align-items:baseline; gap:6px; padding:1px 6px; border-radius:4px; color:var(--fg); text-decoration:none; white-space:nowrap; overflow:hidden; }
+#tree a { display:flex; align-items:center; gap:6px; padding:1px 6px; border-radius:4px; color:var(--fg); text-decoration:none; white-space:nowrap; overflow:hidden; }
 #tree .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
 .age { color:var(--muted); font-size:11px; font-weight:400; font-variant-numeric:tabular-nums; }
 #tree .age { margin-left:auto; }
@@ -694,7 +811,7 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 .rootcard h2 a { color:var(--fg); text-decoration:none; }
 .rootcard h2 .count { color:var(--muted); font-size:12px; font-weight:400; margin-left:auto; }
 .rootcard ul { list-style:none; margin:0; padding:0; font-size:14px; }
-.rootcard li a { display:flex; gap:8px; padding:5px 0; text-decoration:none; color:var(--fg); border-top:1px solid var(--line); }
+.rootcard li a { display:flex; align-items:center; gap:8px; padding:5px 0; text-decoration:none; color:var(--fg); border-top:1px solid var(--line); }
 .rootcard li a .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
 /* highlight.js: GitHub-like light/dark */
 .hljs-comment,.hljs-quote{color:#6e7781}.hljs-keyword,.hljs-selector-tag,.hljs-type{color:#cf222e}.hljs-string,.hljs-regexp,.hljs-addition{color:#0a3069}.hljs-number,.hljs-literal,.hljs-built_in,.hljs-attr,.hljs-variable,.hljs-template-variable{color:#0550ae}.hljs-title,.hljs-section,.hljs-name{color:#8250df}.hljs-deletion{color:#82071e}.hljs-meta{color:#953800}
@@ -740,7 +857,7 @@ function filePage(root: Root, current: string, mainHtml: string, nonce: string, 
 
 function homePage(nonce: string, scope: Scope): string {
   const cards = visibleRoots(scope).map((r) => {
-    const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}"><span class="name">${esc(e.rel)}</span>${ageTag(e.mtime)}</a></li>`).join("");
+    const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}">${iconFor(e.rel, extOf(e.rel))}<span class="name">${esc(e.rel)}</span>${statusBadge(r.statusFor(e.rel))}${ageTag(e.mtime)}</a></li>`).join("");
     return `<section class="rootcard"><h2><a href="${r.base}/">${esc(r.name)}</a><span class="count">${r.files.size} files</span></h2><ul>${rec}</ul></section>`;
   }).join("");
   return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });
@@ -776,7 +893,8 @@ const HTML = { ...SEC_HEADERS, "Content-Type": "text/html; charset=utf-8" };
 const pageCsp = (nonce: string) =>
   `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 // Raw files: sandboxed (opaque origin) with no fetch/XHR/WebSocket and no remote scripts, images or fonts.
-// HTML also gets allow-scripts + inline scripts, never allow-same-origin, so a page can't read artipeek's cookie or other files.
+// HTML inside artipeek's own file page also gets allow-scripts + inline scripts (see the raw route), never
+// allow-same-origin, so a page can't read artipeek's cookie or other files.
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:";
 const RAW_CSP_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:";
 const notFound = () => new Response("Not found", { status: 404, headers: SEC_HEADERS });
@@ -824,22 +942,28 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
     return new Response(renderSidebar(root, url.searchParams.get("current") ?? "", sort), { headers: HTML });
   }
 
-  const am = /^\/(view|raw|part\/main)\/(.+)$/.exec(rest);
+  const am = /^\/(view|raw|part\/main|part\/status)\/(.+)$/.exec(rest);
   if (!am) return notFound();
   const rel = decode(am[2]);
   const f = rel ? root.resolve(rel) : null;
   if (!f) return notFound();
 
+  if (am[1] === "part/status") return new Response(statusBar(root, f.rel), { headers: HTML });
   if (am[1] === "raw") {
     const ext = extOf(f.rel);
+    // HTML may run its own inline scripts only inside artipeek's file page: the browser says so with
+    // Sec-Fetch-Dest: iframe + Sec-Fetch-Site: same-origin, and that page's CSP (frame-src 'self') stops the
+    // frame from navigating to another site. Opened directly in a tab (or framed by another site), a page
+    // could navigate itself elsewhere and take its own text along, so there it gets no scripts at all.
+    const inOurFrame = req.headers.get("sec-fetch-dest") === "iframe" && req.headers.get("sec-fetch-site") === "same-origin";
     const type = MIME[ext] ?? "text/plain; charset=utf-8";
     return new Response(Bun.file(f.abs), {
       headers: {
         ...SEC_HEADERS,
         "Content-Type": type,
-        // Even opened directly, raw files get an opaque origin (no cookies, no same-origin reads) and no network.
-        // HTML pages may run their own inline scripts (animations, toggles) inside that box; nothing else may.
-        "Content-Security-Policy": ext === "html" || ext === "htm" ? RAW_CSP_HTML : RAW_CSP,
+        // Raw files always get an opaque origin (no cookies, no same-origin reads) and no fetch/XHR/remote loads.
+        "Content-Security-Policy": (ext === "html" || ext === "htm") && inOurFrame ? RAW_CSP_HTML : RAW_CSP,
+        Vary: "Sec-Fetch-Dest, Sec-Fetch-Site",
       },
     });
   }

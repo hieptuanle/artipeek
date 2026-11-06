@@ -126,6 +126,16 @@ for hdrs in "" "Sec-Fetch-Dest: document" "Sec-Fetch-Dest: iframe|Sec-Fetch-Site
   grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|script-src' <<<"$csp" \
     && ok "raw html opened ${hdrs:-with no fetch headers}: no scripts" || bad "raw html [$hdrs]: $csp"
 done
+# app tabs: the page has the bar and a pane; only HTML in artipeek's own frame gets the link script
+tp=$(curl -s "$R/view/docs/note.md")
+grep -q '<main id="main"><nav id="tabs"[^>]*hidden></nav><section class="pane">' <<<"$tp" && ok "tabs: bar and first pane in the page" || bad "tabs markup"
+fr=$(curl -s -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$R/raw/messages/2026-10-31-x/email.html")
+grep -q '<h1>Email draft</h1>' <<<"$fr" && grep -q 'artipeek:"open"' <<<"$fr" && ok "tabs: framed HTML keeps its text and gets the link script" || bad "framed link script"
+for hdrs in "" "Sec-Fetch-Dest: document" "Sec-Fetch-Dest: iframe|Sec-Fetch-Site: cross-site"; do
+  a=(); IFS='|' read -ra hs <<<"$hdrs"; for h in "${hs[@]}"; do a+=(-H "$h"); done
+  ! grep -q 'artipeek:"open"' <<<"$(curl -s "${a[@]}" "$R/raw/messages/2026-10-31-x/email.html")" && ok "tabs: no link script for [$hdrs]" || bad "link script leaked for [$hdrs]"
+done
+! grep -q 'artipeek:"open"' <<<"$(curl -s -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$R/raw/docs/other.md")" && ok "tabs: no link script in a non-HTML file" || bad "link script in md"
 csp=$(rawcsp -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$R/raw/docs/other.md")
 grep -q "sandbox; default-src 'none'" <<<"$csp" && ! grep -q 'allow-scripts\|script-src' <<<"$csp" && ok "raw non-html: still no scripts" || bad "raw md csp: $csp"
 

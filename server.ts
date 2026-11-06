@@ -660,11 +660,10 @@ function rootSwitcher(current: string, scope: Scope): string {
 const CLIENT_JS = `
 (() => {
   const body = document.body;
-  const base = body.dataset.base || "";
-  const cur = body.dataset.path || "";
   const main = document.getElementById("main");
   const tree = document.getElementById("tree");
   const filter = document.getElementById("filter");
+  const tabbar = document.getElementById("tabs");
 
   // phone menu (drawer)
   const closeNav = () => body.classList.remove("nav-open");
@@ -686,14 +685,245 @@ const CLIENT_JS = `
   setInterval(ages, 30000);
   if (!tree) return; // home page
 
-  const KEY = "artipeek-open:" + base;
-  const load = () => { try { return new Set(JSON.parse(localStorage.getItem(KEY) || "[]")); } catch { return new Set(); } };
-  const save = (s) => { try { localStorage.setItem(KEY, JSON.stringify([...s])); } catch {} };
+  // ----- app tabs -----
+  // Each open file has a pane in the page, hidden unless it is the active tab, so switching back fetches nothing.
+  // The list is in sessionStorage: every browser tab has its own, and it survives a reload.
+  const TABS = "artipeek-tabs";
+  const tabs = [];
+  let active = null;
+  let shownBase = null; // the folder the sidebar and the live stream are on
+  history.scrollRestoration = "manual";
+
+  const fileUrl = (t, kind) => t.base + "/" + kind + "/" + t.path.split("/").map(encodeURIComponent).join("/");
+  const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+  const nameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
+  const findTab = (base, path) => tabs.find((t) => t.base === base && t.path === path);
+  function parseFile(u) {
+    const m = /^(\\/r\\/[^/]+)\\/(?:view|raw)\\/(.+)$/.exec(u.pathname);
+    if (!m) return null;
+    try { return { base: m[1], path: m[2].split("/").map(decodeURIComponent).join("/") }; } catch { return null; }
+  }
+  const note = (html) => '<div class="filebar"><button type="button" class="menu" aria-label="Files" data-menu>☰</button></div><p class="note">' + html + "</p>";
+
+  function addTab(base, path, y, pane) {
+    if (!pane) {
+      pane = document.createElement("section");
+      pane.className = "pane";
+      pane.hidden = true;
+      pane.innerHTML = note("Loading…");
+      main.appendChild(pane);
+    }
+    const t = { base, path, y: y || 0, pane, loaded: false, seq: 0, hash: "" };
+    tabs.push(t);
+    return t;
+  }
+  function saveTabs() {
+    try { sessionStorage.setItem(TABS, JSON.stringify(tabs.map((t) => ({ base: t.base, path: t.path, y: t.y })))); } catch {}
+  }
+  function readTabs() {
+    try {
+      const a = JSON.parse(sessionStorage.getItem(TABS) || "[]");
+      return Array.isArray(a) ? a.filter((s) => s && typeof s.path === "string" && /^\\/r\\/[^/]+$/.test(s.base)) : [];
+    } catch { return []; }
+  }
+
+  function drawTabs() {
+    tabbar.hidden = tabs.length < 2;
+    body.classList.toggle("has-tabs", tabs.length > 1);
+    const same = {};
+    tabs.forEach((t) => { const n = nameOf(t.path); same[n] = (same[n] || 0) + 1; });
+    tabbar.replaceChildren(...tabs.map((t, i) => {
+      const box = document.createElement("div");
+      box.className = t === active ? "tab active" : "tab";
+      box.dataset.i = i;
+      const a = document.createElement("a");
+      a.href = fileUrl(t, "view");
+      a.title = t.base.slice(3) + "/" + t.path;
+      // Many files share a name (email.html, README.md): then show the folder too.
+      a.textContent = (same[nameOf(t.path)] > 1 && dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path);
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "×";
+      x.setAttribute("aria-label", "Close " + nameOf(t.path));
+      x.dataset.close = i;
+      box.append(a, x);
+      return box;
+    }));
+    const el = tabbar.querySelector(".active");
+    if (el && el.offsetLeft < tabbar.scrollLeft) tabbar.scrollLeft = el.offsetLeft - 8;
+    else if (el && el.offsetLeft + el.offsetWidth > tabbar.scrollLeft + tabbar.clientWidth) tabbar.scrollLeft = el.offsetLeft + el.offsetWidth - tabbar.clientWidth + 8;
+  }
+
+  // Ids repeat across panes (and hidden ones can't scroll), so look only inside the active one.
+  function jump(hash) {
+    const raw = hash.slice(1);
+    let dec = raw;
+    try { dec = decodeURIComponent(raw); } catch {}
+    const el = raw && (active.pane.querySelector('[id="' + CSS.escape(raw) + '"]') || active.pane.querySelector('[id="' + CSS.escape(dec) + '"]'));
+    if (el) el.scrollIntoView();
+    return !!el;
+  }
+
+  function markTree() {
+    tree.querySelectorAll("a.current").forEach((a) => a.classList.remove("current"));
+    tree.querySelectorAll('a[data-path="' + CSS.escape(active.path) + '"]').forEach((a) => a.classList.add("current"));
+    const c = tree.querySelector("ul.tree a.current");
+    if (!c) return;
+    for (let d = c.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
+    if (c.offsetTop < tree.scrollTop || c.offsetTop > tree.scrollTop + tree.clientHeight - 30) tree.scrollTop = c.offsetTop - tree.clientHeight / 2;
+  }
+
+  function activate(t, how, hash) {
+    if (t === active) {
+      if (how === "push" && hash) history.pushState(null, "", fileUrl(t, "view") + hash);
+      if (hash) jump(hash);
+      if (!t.loaded) load(t);
+      return;
+    }
+    if (active) { active.y = scrollY; active.pane.hidden = true; }
+    active = t;
+    t.pane.hidden = false;
+    const url = fileUrl(t, "view") + (hash || "");
+    if (how === "push") history.pushState(null, "", url);
+    else if (how === "replace") history.replaceState(null, "", url);
+    document.title = nameOf(t.path) + " · artipeek";
+    drawTabs();
+    if (t.base !== shownBase) showFolder(t.base);
+    else markTree();
+    saveTabs();
+    if (t.loaded) { if (!hash || !jump(hash)) scrollTo(0, t.y); }
+    else { t.hash = hash || ""; scrollTo(0, 0); load(t); }
+  }
+
+  function openFile(base, path, hash, how) {
+    activate(findTab(base, path) || addTab(base, path), how || "push", hash);
+  }
+
+  function closeTab(t) {
+    const i = tabs.indexOf(t);
+    if (i < 0 || tabs.length < 2) return;
+    tabs.splice(i, 1);
+    t.seq++; // drop any fetch still running for it
+    t.pane.remove();
+    if (t === active) { active = null; activate(tabs[Math.min(i, tabs.length - 1)], "replace"); }
+    else { drawTabs(); saveTabs(); }
+  }
+
+  const mtimeOf = (html) => (/data-mtime="(\\d+)"/.exec(html) || [])[1];
+  // onlyIfNewer: after a gap in the live stream. Don't reset a page (an iframe restarts) if its file didn't change.
+  async function load(t, onlyIfNewer) {
+    const seq = ++t.seq;
+    let r = null, html = "";
+    try { r = await fetch(fileUrl(t, "part/main")); html = await r.text(); } catch { r = null; }
+    if (seq !== t.seq) return; // a newer load took over, or the tab closed
+    const first = !t.loaded;
+    if (r && r.ok) {
+      if (onlyIfNewer && !first && mtimeOf(html) === mtimeOf(t.pane.innerHTML)) return;
+      const y = scrollY;
+      t.pane.innerHTML = html;
+      ages(t.pane);
+      t.loaded = true;
+      if (t === active && !(t.hash && jump(t.hash))) scrollTo(0, first ? t.y : y);
+      t.hash = "";
+    } else if (r && r.status === 404) {
+      t.pane.innerHTML = note("This file was removed.");
+      t.loaded = true;
+    } else if (first) {
+      t.pane.innerHTML = note('Could not load this file. <button type="button" data-retry>Try again</button>');
+    }
+  }
+  async function loadStatus(t) {
+    const r = await fetch(fileUrl(t, "part/status"));
+    const el = t.pane.querySelector("#stbar");
+    if (r.ok && el) el.outerHTML = await r.text();
+  }
+
+  // One live stream per browser tab, on the folder in view. Tabs of other folders catch up when you go back to them.
+  let stream = null;
+  function connect(base, catchUp) {
+    if (stream) stream.close();
+    const es = stream = new EventSource(base + "/events");
+    es.addEventListener("change", (ev) => {
+      const paths = JSON.parse(ev.data);
+      const dirs = paths.filter((p) => /\\.(md|markdown|html?)$/i.test(p)).map(dirOf);
+      for (const t of tabs) {
+        if (t.base !== base || !t.loaded) continue;
+        if (paths.includes(t.path)) load(t);
+        else if (dirs.includes(dirOf(t.path))) loadStatus(t);
+      }
+    });
+    es.addEventListener("tree", refreshTree);
+    es.onerror = () => { catchUp = true; body.classList.add("offline"); };
+    es.onopen = () => {
+      body.classList.remove("offline");
+      if (catchUp) { catchUp = false; refreshTree(); tabs.forEach((t) => { if (t.base === base && t.loaded) load(t, true); }); }
+    };
+  }
+  function showFolder(base) {
+    const first = shownBase === null;
+    shownBase = base;
+    const box = document.querySelector("details.roots");
+    box.open = false;
+    box.querySelector("summary").textContent = base.slice(3);
+    box.querySelectorAll("a").forEach((a) => a.classList.toggle("current", a.getAttribute("href") === base + "/"));
+    connect(base, !first);
+    if (first) markTree(); else refreshTree();
+  }
+
+  document.addEventListener("click", (e) => {
+    const x = e.target.closest("[data-close]");
+    if (x) { closeTab(tabs[Number(x.dataset.close)]); return; }
+    if (e.target.closest("[data-retry]")) { load(active); return; }
+    const a = e.target.closest("a[href]");
+    if (!a || e.defaultPrevented || e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || a.target || a.hasAttribute("download")) return;
+    const u = new URL(a.href);
+    if (u.origin !== location.origin) return;
+    if (a.getAttribute("href").startsWith("#")) { // a heading or footnote in this file
+      e.preventDefault();
+      history.pushState(null, "", u.href);
+      jump(u.hash);
+      return;
+    }
+    const f = parseFile(u);
+    if (f) { e.preventDefault(); closeNav(); openFile(f.base, f.path, u.hash); return; }
+    if (/^\\/r\\/[^/]+\\/$/.test(u.pathname)) { // a folder: the server picks its first file
+      e.preventDefault();
+      closeNav();
+      fetch(u.href).then((r) => {
+        const d = r.ok && parseFile(new URL(r.url));
+        if (d) openFile(d.base, d.path); else location.href = u.href;
+      }).catch(() => { location.href = u.href; });
+    }
+  });
+  tabbar.addEventListener("auxclick", (e) => { // middle click closes
+    const box = e.button === 1 && e.target.closest(".tab");
+    if (box) { e.preventDefault(); closeTab(tabs[Number(box.dataset.i)]); }
+  });
+  // A link clicked inside an HTML page: its frame can't open tabs, so it asks (see FRAME_LINKS). Only the visible page counts.
+  addEventListener("message", (e) => {
+    const f = active.pane.querySelector("iframe");
+    if (!f || e.source !== f.contentWindow || !e.data || e.data.artipeek !== "open" || typeof e.data.href !== "string") return;
+    let u;
+    try { u = new URL(e.data.href); } catch { return; }
+    const d = u.origin === location.origin && parseFile(u);
+    if (d) openFile(d.base, d.path, u.hash);
+  });
+  addEventListener("popstate", () => {
+    const f = parseFile(location);
+    if (f) openFile(f.base, f.path, location.hash, "none"); else location.reload();
+  });
+  addEventListener("pagehide", () => { active.y = scrollY; saveTabs(); });
+  addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); }); // back from another page: the list may have moved on
+
+  // ----- sidebar -----
+  const openKey = () => "artipeek-open:" + shownBase;
+  const loadOpen = () => { try { return new Set(JSON.parse(localStorage.getItem(openKey()) || "[]")); } catch { return new Set(); } };
+  const save = (s) => { try { localStorage.setItem(openKey(), JSON.stringify([...s])); } catch {} };
   function restore() {
-    const open = load();
+    const open = loadOpen();
     tree.querySelectorAll("details[data-dir]").forEach((d) => {
       if (open.has(d.dataset.dir)) d.open = true;
-      d.addEventListener("toggle", () => { const s = load(); d.open ? s.add(d.dataset.dir) : s.delete(d.dataset.dir); save(s); });
+      d.addEventListener("toggle", () => { const s = loadOpen(); d.open ? s.add(d.dataset.dir) : s.delete(d.dataset.dir); save(s); });
     });
     applyFilter();
   }
@@ -710,14 +940,24 @@ const CLIENT_JS = `
   }
   filter.addEventListener("input", applyFilter);
   filter.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { const a = tree.querySelector("ul.tree li.file:not([hidden]) a"); if (a) location.href = a.href; }
+    if (e.key === "Enter") { const a = tree.querySelector("ul.tree li.file:not([hidden]) a"); if (a) a.click(); }
     if (e.key === "Escape") { filter.value = ""; applyFilter(); }
   });
   const sortBtns = document.querySelectorAll("#sort button");
   const getSort = () => { const b = document.querySelector('#sort button[aria-pressed="true"]'); return b ? b.dataset.sort : "name"; };
+  let treeSeq = 0;
   async function refreshTree() {
-    const r = await fetch(base + "/part/tree?current=" + encodeURIComponent(cur) + "&sort=" + getSort());
-    if (r.ok) { const top = tree.scrollTop; tree.innerHTML = await r.text(); restore(); tree.scrollTop = top; }
+    const seq = ++treeSeq;
+    const r = await fetch(shownBase + "/part/tree?current=" + encodeURIComponent(active.path) + "&sort=" + getSort());
+    if (r.ok) {
+      const html = await r.text();
+      if (seq !== treeSeq) return;
+      const top = tree.scrollTop;
+      tree.innerHTML = html;
+      restore();
+      tree.scrollTop = top;
+      markTree();
+    }
   }
   sortBtns.forEach((b) => b.addEventListener("click", () => {
     if (b.getAttribute("aria-pressed") === "true") return;
@@ -725,36 +965,30 @@ const CLIENT_JS = `
     document.cookie = "${SORT_COOKIE}=" + b.dataset.sort + "; Path=/; Max-Age=31536000; SameSite=Lax";
     refreshTree();
   }));
-  restore();
-  const c = tree.querySelector("ul.tree a.current"); if (c) tree.scrollTop = c.offsetTop - tree.clientHeight / 2;
 
-  function connect() {
-    const es = new EventSource(base + "/events");
-    es.addEventListener("change", async (ev) => {
-      const paths = JSON.parse(ev.data);
-      const curDir = cur.includes("/") ? cur.slice(0, cur.lastIndexOf("/")) : "";
-      const nextToCur = (p) => /\\.(md|markdown|html?)$/i.test(p) && (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") === curDir;
-      if (cur && !paths.includes(cur) && paths.some(nextToCur)) {
-        const r = await fetch(base + "/part/status/" + cur.split("/").map(encodeURIComponent).join("/"));
-        const el = document.getElementById("stbar");
-        if (r.ok && el) el.outerHTML = await r.text();
-      }
-      if (cur && paths.includes(cur)) {
-        const r = await fetch(base + "/part/main/" + cur.split("/").map(encodeURIComponent).join("/"));
-        if (r.ok) { const y = scrollY; main.innerHTML = await r.text(); scrollTo(0, y); }
-        else if (r.status === 404) main.innerHTML = '<div class="filebar"><button type="button" class="menu" data-menu>☰</button></div><p class="note">This file was removed.</p>';
-      }
-    });
-    es.addEventListener("tree", refreshTree);
-    es.onerror = () => body.classList.add("offline");
-    es.onopen = () => body.classList.remove("offline");
+  // ----- start: the saved list, plus the file the server just rendered -----
+  const here = { base: body.dataset.base, path: body.dataset.path };
+  const firstPane = main.querySelector(".pane");
+  for (const s of readTabs()) {
+    if (findTab(s.base, s.path)) continue;
+    addTab(s.base, s.path, s.y, s.base === here.base && s.path === here.path ? firstPane : null);
   }
-  connect();
+  const start = findTab(here.base, here.path) || addTab(here.base, here.path, 0, firstPane);
+  start.loaded = true;
+  activate(start, "none", location.hash);
+  restore();
+  (async () => { // refill the other tabs so they switch at once after a reload
+    for (const t of [...tabs]) if (!t.loaded && tabs.includes(t)) await load(t);
+  })();
 })();
 `;
 
+// Added to an HTML page shown in artipeek's own frame. The sandbox stops the page from opening tabs (and artipeek's
+// pages can't load inside a frame), so a click on a link to a file here asks the parent page to open it.
+const FRAME_LINKS = `<script>document.addEventListener("click",function(e){if(e.defaultPrevented||e.button||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;var a=e.target.closest&&e.target.closest("a[href]");if(!a||a.hasAttribute("download"))return;var u=new URL(a.href);if(u.origin!==location.origin||u.pathname===location.pathname||!/^\\/r\\/[^/]+\\/(view|raw)\\//.test(u.pathname))return;e.preventDefault();parent.postMessage({artipeek:"open",href:u.href},location.origin)})</script>`;
+
 const CSS = ICON_CSS + `
-:root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
+:root { --tabh:0px; color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
 @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --side:#151b23; --line:#30363d; --accent:#4493f8; --cur:#1f3a5f; --code:#151b23; } }
 * { box-sizing: border-box; }
 html, body { margin:0; background:var(--bg); color:var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-text-size-adjust:100%; }
@@ -811,7 +1045,19 @@ details.roots a.current { color:var(--accent); font-weight:600; }
 #tree details.recent a .name { color:var(--muted); direction:rtl; text-align:left; }
 body.offline aside header::after { content:"live update off"; display:block; color:#d1242f; font-size:12px; }
 main { min-width:0; padding:0 32px 60px; }
-.filebar { position:sticky; top:0; background:var(--bg); display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); margin-bottom:16px; font-size:13px; z-index:2; }
+/* app tabs */
+body.has-tabs { --tabh:36px; }
+#tabs { position:sticky; top:0; z-index:3; display:flex; align-items:flex-end; gap:2px; height:36px; margin:0 -32px; padding:0 32px; overflow-x:auto; scrollbar-width:none; background:var(--side); border-bottom:1px solid var(--line); }
+#tabs[hidden] { display:none; }
+#tabs::-webkit-scrollbar { display:none; }
+.tab { flex:none; display:flex; align-items:center; max-width:240px; height:31px; margin-bottom:-1px; border:1px solid transparent; border-bottom:0; border-radius:6px 6px 0 0; font-size:13px; }
+.tab a { flex:1; min-width:0; padding:5px 2px 5px 10px; color:var(--muted); text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tab button { flex:none; width:22px; height:22px; margin-right:3px; padding:0; font:inherit; line-height:1; border:0; border-radius:4px; background:none; color:var(--muted); cursor:pointer; }
+.tab button:hover, .tab:not(.active):hover { background:var(--line); }
+.tab.active { background:var(--bg); border-color:var(--line); }
+.tab.active a { color:var(--fg); font-weight:600; }
+.pane [id] { scroll-margin-top:calc(var(--tabh) + 52px); }
+.filebar { position:sticky; top:var(--tabh); background:var(--bg); display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); margin-bottom:16px; font-size:13px; z-index:2; }
 .filebar .crumbs { font-family:ui-monospace, monospace; overflow-wrap:anywhere; flex:1; min-width:0; }
 .filebar .rootname, .filebar .dirname { color:var(--muted); }
 .filebar .meta { color:var(--muted); white-space:nowrap; }
@@ -835,7 +1081,7 @@ table.frontmatter { font-size:13px; margin-top:0 !important; }
 table.frontmatter th { text-align:left; color:var(--muted); font-weight:500; }
 .wikilink.broken { color:#d1242f; border-bottom:1px dashed; }
 a.missing { color:#d1242f; }
-iframe.htmlframe { width:100%; height:calc(100dvh - 100px); border:1px solid var(--line); border-radius:6px; background:#fff; }
+iframe.htmlframe { width:100%; height:calc(100dvh - 100px - var(--tabh)); border:1px solid var(--line); border-radius:6px; background:#fff; }
 .imgwrap img { max-width:100%; }
 .note { color:var(--muted); font-style:italic; }
 .binary { padding:20px 0; }
@@ -869,7 +1115,9 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
   #sort button { font-size:12px; padding:4px 9px; }
   #filter { font-size:16px; } /* no iOS zoom on focus */
   pre.hljs { font-size:12px; }
-  iframe.htmlframe { height:calc(100dvh - 70px); }
+  iframe.htmlframe { height:calc(100dvh - 70px - var(--tabh)); }
+  #tabs { margin:0 -12px; padding:0 12px; }
+  .tab { max-width:180px; }
   .markdown { font-size:16px; }
 }
 `;
@@ -888,7 +1136,7 @@ function shell(opts: { title: string; bodyClass: string; data?: Record<string, s
 function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope): string {
   const aside = `<aside><header><div class="headrow">${rootSwitcher(root.name, scope)}<span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
 <nav id="tree">${renderSidebar(root, current, sort)}</nav></aside>`;
-  return shell({ title: path.posix.basename(current) || root.name, bodyClass: "app", data: { base: root.base, path: current }, aside, main: mainHtml, nonce });
+  return shell({ title: path.posix.basename(current) || root.name, bodyClass: "app", data: { base: root.base, path: current }, aside, main: `<nav id="tabs" aria-label="Open files" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
 }
 
 function homePage(nonce: string, scope: Scope): string {
@@ -993,12 +1241,13 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
     // could navigate itself elsewhere and take its own text along, so there it gets no scripts at all.
     const inOurFrame = req.headers.get("sec-fetch-dest") === "iframe" && req.headers.get("sec-fetch-site") === "same-origin";
     const type = MIME[ext] ?? "text/plain; charset=utf-8";
-    return new Response(Bun.file(f.abs), {
+    const framed = (ext === "html" || ext === "htm") && inOurFrame;
+    return new Response(framed ? Buffer.concat([await readFile(f.abs), Buffer.from(FRAME_LINKS)]) : Bun.file(f.abs), {
       headers: {
         ...SEC_HEADERS,
         "Content-Type": type,
         // Raw files always get an opaque origin (no cookies, no same-origin reads) and no fetch/XHR/remote loads.
-        "Content-Security-Policy": (ext === "html" || ext === "htm") && inOurFrame ? RAW_CSP_HTML : RAW_CSP,
+        "Content-Security-Policy": framed ? RAW_CSP_HTML : RAW_CSP,
         Vary: "Sec-Fetch-Dest, Sec-Fetch-Site",
       },
     });

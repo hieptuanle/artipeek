@@ -934,7 +934,7 @@ const CLIENT_JS = `
     const d = u.origin === location.origin && parseFile(u);
     if (d) openFile(d.base, d.path, u.hash);
   });
-  // An answer button in an HTML page (see FRAME_ANSWERS): show artipeek's own sheet with the exact text. Only a
+  // An answer button in an HTML page (see frameAnswers): show artipeek's own sheet with the exact text. Only a
   // real click on Send here posts it; the page itself can't send anything or press this button.
   let sheet = null;
   addEventListener("message", (e) => {
@@ -943,6 +943,24 @@ const CLIENT_JS = `
     const id = String(e.data.id || ""), text = String(e.data.text || "").trim();
     if (!/^[A-Za-z][A-Za-z0-9._-]{0,31}$/.test(id) || !text || text.length > 2000) return;
     askAnswer(active, f, id, text);
+  });
+  // HTML pages keep their place across live reloads (see frameState): scroll and typed text, per file, in this
+  // browser tab's sessionStorage. Any open tab's frame counts: hidden tabs reload live too.
+  const frameKey = (t) => "artipeek-frame:" + t.base + "/" + t.path;
+  addEventListener("message", (e) => {
+    if (!e.data || (e.data.artipeek !== "state" && e.data.artipeek !== "ready")) return;
+    const t = tabs.find((x) => { const f = x.pane.querySelector("iframe"); return f && e.source === f.contentWindow; });
+    if (!t) return;
+    if (e.data.artipeek === "ready") {
+      let st = null;
+      try { st = JSON.parse(sessionStorage.getItem(frameKey(t)) || "null"); } catch (x) {}
+      if (st) e.source.postMessage({ artipeek: "restore", y: st.y, fields: st.fields }, "*");
+      return;
+    }
+    const fields = {};
+    if (e.data.fields && typeof e.data.fields === "object")
+      for (const [k, v] of Object.entries(e.data.fields).slice(0, 50)) if (typeof v === "string" && k.length <= 100) fields[k] = v.slice(0, 4000);
+    try { sessionStorage.setItem(frameKey(t), JSON.stringify({ y: Math.max(0, Number(e.data.y) || 0), fields: fields })); } catch (x) {}
   });
   function askAnswer(t, frame, id, text) {
     if (sheet) sheet.remove();
@@ -965,7 +983,8 @@ const CLIENT_JS = `
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.ok) throw new Error(j.error || "HTTP " + r.status);
         msg.textContent = "Saved at " + new Date(j.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + (j.committed ? "." : " (not committed yet).");
-        try { frame.contentWindow.postMessage({ artipeek: "answer-saved", id: id, text: text, at: j.at }, "*"); } catch (x) {}
+        const cur = t.pane.querySelector("iframe") || frame; // a live reload may have swapped the frame meanwhile
+        try { cur.contentWindow.postMessage({ artipeek: "answer-saved", id: id, text: text, at: j.at, uid: j.uid }, "*"); } catch (x) {}
         setTimeout(close, 1500);
       } catch (err) { msg.textContent = "Not saved: " + err.message; send.disabled = false; }
     });
@@ -1050,12 +1069,42 @@ const CLIENT_JS = `
 // pages can't load inside a frame), so a click on a link to a file here asks the parent page to open it.
 const FRAME_LINKS = `<script>document.addEventListener("click",function(e){if(e.defaultPrevented||e.button||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;var a=e.target.closest&&e.target.closest("a[href]");if(!a||a.hasAttribute("download"))return;var u=new URL(a.href);if(u.origin!==location.origin||u.pathname===location.pathname||!/^\\/r\\/[^/]+\\/(view|raw)\\//.test(u.pathname))return;e.preventDefault();parent.postMessage({artipeek:"open",href:u.href},location.origin)})</script>`;
 
+// Added after FRAME_LINKS to every HTML page in artipeek's frame. A live reload swaps in a new frame, so the page
+// tells the parent where it is scrolled (and, in folders with answers, what is typed in its text boxes with an id);
+// a new frame of the same file asks for it back ("ready") and gets it ("restore"; the scroll stops trying after
+// about a second, or at once when you touch, scroll or press a key). Kept in the browser tab's
+// sessionStorage, by the parent, never sent to the server.
+const frameState = (fields: boolean) => `<script>(function(){var F=${fields ? 1 : 0},tm=0,busy=false;function vals(){var o={};if(!F)return o;document.querySelectorAll("textarea[id],input[id]").forEach(function(el){var ty=(el.getAttribute("type")||"text").toLowerCase();if(el.tagName==="INPUT"&&!/^(text|search|email|url|tel|number)$/.test(ty))return;o[el.id]=el.value});return o}function send(){clearTimeout(tm);tm=setTimeout(function(){if(!busy)parent.postMessage({artipeek:"state",y:scrollY,fields:vals()},location.origin)},250)}addEventListener("scroll",send,{passive:true});document.addEventListener("input",send);addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.artipeek!=="restore")return;var f=e.data.fields||{};if(F)for(var k in f){var el=document.getElementById(k);if(el&&(el.tagName==="TEXTAREA"||el.tagName==="INPUT")&&typeof f[k]==="string")el.value=f[k]}var y=Number(e.data.y)||0;if(y>0){busy=true;var n=0,stop=function(){busy=false;n=99};["wheel","touchstart","pointerdown","keydown"].forEach(function(t){addEventListener(t,stop,{once:true,passive:true})});(function go(){if(n>=99)return;scrollTo(0,y);if(Math.abs(scrollY-y)>2&&n++<20)setTimeout(go,50);else busy=false})()}});parent.postMessage({artipeek:"ready"},location.origin)})()</script>`;
+
 // Added after FRAME_LINKS in folders with answers. A click on an element with data-artipeek-answer="<id>" asks the
 // parent page to send an answer: data-value (a fixed choice) and/or data-input (a CSS selector of a text box in the
-// page), joined as "<value>: <text>". The parent shows its own sheet; nothing is sent from here. When it is saved, the
-// parent tells the page: matching elements get data-artipeek-state="saved" and the document gets an
-// "artipeek:answer-saved" event (detail: id, text, at).
-const FRAME_ANSWERS = `<script>(function(){function txt(b){var v=(b.getAttribute("data-value")||"").trim(),s=b.getAttribute("data-input"),n="";if(s){try{var el=document.querySelector(s);n=el&&typeof el.value==="string"?el.value.trim():""}catch(x){}}return v&&n?v+": "+n:v||n}document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-artipeek-answer]");if(!b)return;e.preventDefault();var t=txt(b);if(!t){b.setAttribute("data-artipeek-state","empty");return}parent.postMessage({artipeek:"answer",id:b.getAttribute("data-artipeek-answer"),text:t},location.origin)});addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.artipeek!=="answer-saved")return;var id=String(e.data.id);document.querySelectorAll("[data-artipeek-answer]").forEach(function(b){if(b.getAttribute("data-artipeek-answer")===id)b.setAttribute("data-artipeek-state","saved")});document.dispatchEvent(new CustomEvent("artipeek:answer-saved",{detail:{id:id,text:String(e.data.text||""),at:String(e.data.at||"")}}))})})()</script>`;
+// page), joined as "<value>: <text>". The parent shows its own sheet; nothing is sent from here. When an answer is
+// saved, and again on every load for answers saved in the last 48 hours (so a live reload doesn't forget them), the
+// page hears it: elements with that id get data-artipeek-state="saved", the one whose data-value matches gets
+// data-artipeek-chosen="true", and the document gets an "artipeek:answer-saved" event (detail: id, text, at, uid,
+// restored). After a live save, the clicked button's text box is emptied.
+const frameAnswers = (recent: string) => `<script>(function(){var A=${recent},last={};function txt(b){var v=(b.getAttribute("data-value")||"").trim(),s=b.getAttribute("data-input"),n="";if(s){try{var el=document.querySelector(s);n=el&&typeof el.value==="string"?el.value.trim():""}catch(x){}}return v&&n?v+": "+n:v||n}function mark(id,t){document.querySelectorAll("[data-artipeek-answer]").forEach(function(b){if(b.getAttribute("data-artipeek-answer")!==id)return;b.setAttribute("data-artipeek-state","saved");var v=(b.getAttribute("data-value")||"").trim();if(v&&(t===v||t.indexOf(v+":")===0))b.setAttribute("data-artipeek-chosen","true");else b.removeAttribute("data-artipeek-chosen")})}function fire(d){mark(d.id,d.text);document.dispatchEvent(new CustomEvent("artipeek:answer-saved",{detail:d}))}document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-artipeek-answer]");if(!b)return;e.preventDefault();var t=txt(b);if(!t){b.setAttribute("data-artipeek-state","empty");return}last[b.getAttribute("data-artipeek-answer")]=b;parent.postMessage({artipeek:"answer",id:b.getAttribute("data-artipeek-answer"),text:t},location.origin)});addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.artipeek!=="answer-saved")return;var id=String(e.data.id);fire({id:id,text:String(e.data.text||""),at:String(e.data.at||""),uid:String(e.data.uid||""),restored:false});var b=last[id],s=b&&b.getAttribute("data-input");if(s){try{var el=document.querySelector(s);if(el&&typeof el.value==="string"){el.value="";el.dispatchEvent(new Event("input",{bubbles:true}))}}catch(x){}}});function restore(){A.forEach(function(a){fire({id:a.id,text:a.text,at:a.at,uid:a.uid,restored:true})})}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",function(){setTimeout(restore,0)});else setTimeout(restore,0)})()</script>`;
+
+// Latest answer per id from the last 48 hours, as JSON safe inside a <script> (no "<", ">", "&", U+2028/9).
+function recentAnswers(root: Root, cfg: AnswersCfg): string {
+  let txt = "";
+  try {
+    const file = path.join(root.dir, cfg.file);
+    const size = statSync(file).size, len = Math.min(size, 262_144);
+    const buf = Buffer.alloc(len), fd = openSync(file, "r");
+    try { readSync(fd, buf, 0, len, size - len); } finally { closeSync(fd); }
+    txt = buf.toString("utf8");
+  } catch { return "[]"; }
+  const since = Date.now() - 48 * 3600_000;
+  const latest = new Map<string, { id: string; text: string; at: string; uid: string }>();
+  for (const line of txt.split("\n")) {
+    let r: any;
+    try { r = JSON.parse(line); } catch { continue; } // also the first, cut-off line
+    if (r && typeof r.id === "string" && ANSWER_ID_RE.test(r.id) && typeof r.text === "string" && Date.parse(r.at) >= since)
+      latest.set(r.id, { id: r.id, text: r.text.slice(0, 2000), at: String(r.at), uid: String(r.uid ?? "").slice(0, 32) });
+  }
+  return JSON.stringify([...latest.values()]).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
 
 const CSS = ICON_CSS + `
 :root { --tabh:0px; color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
@@ -1332,7 +1381,8 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
     const inOurFrame = req.headers.get("sec-fetch-dest") === "iframe" && req.headers.get("sec-fetch-site") === "same-origin";
     const type = MIME[ext] ?? "text/plain; charset=utf-8";
     const framed = (ext === "html" || ext === "htm") && inOurFrame;
-    const inject = FRAME_LINKS + (answersFor.has(root.name) ? FRAME_ANSWERS : "");
+    const acfg = framed ? answersFor.get(root.name) : undefined;
+    const inject = framed ? FRAME_LINKS + frameState(!!acfg) + (acfg ? frameAnswers(recentAnswers(root, acfg)) : "") : "";
     return new Response(framed ? Buffer.concat([await readFile(f.abs), Buffer.from(inject)]) : Bun.file(f.abs), {
       headers: {
         ...SEC_HEADERS,

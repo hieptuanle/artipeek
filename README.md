@@ -34,7 +34,9 @@ Tip: on the phone, add the page to the home screen.
   - Close a tab with × or a middle click. Ctrl/Cmd-click still opens a real browser tab. The tab bar shows from two tabs up.
 - File list: switch folders (name at the top, ▾), sort by **Name** or **Modified** (newest first; a folder counts as new as its newest file), filter box, "Recent" (10 newest files). The sort choice is kept in a cookie.
 - `.md`: GitHub-style (tables, task lists, code highlight, footnotes, heading anchors), front matter as a small table, relative links and images, Obsidian `[[name]]` links.
-- `.html` (e.g. email drafts, explainers): shown as the page itself, in a sandboxed box. Inside the file page, the page's own inline scripts run (animations, toggles), in a separate origin with no network: it can't read your login cookie or other files, load anything, or leave for another site. Links in it to files here open as tabs: artipeek adds one small script for that, and the page can only ask to open a file. Opened on its own with "raw", it runs no scripts.
+- `.html` (e.g. email drafts, explainers): shown as the page itself, in a sandboxed box. When the file changes and the
+  page reloads, it keeps its scroll position (and, in folders with answers, what you typed in its text boxes): the
+  page tells artipeek, which keeps it in this browser tab's `sessionStorage` and hands it to the new page. Inside the file page, the page's own inline scripts run (animations, toggles), in a separate origin with no network: it can't read your login cookie or other files, load anything, or leave for another site. Links in it to files here open as tabs: artipeek adds one small script for that, and the page can only ask to open a file. Opened on its own with "raw", it runs no scripts.
 - Other text: highlighted code. Images: shown. Other binary files: size + download.
 - **Icons**: every file has a small icon for its type (Markdown, HTML, code by language, shell, config, images, PDF, tables, archives, diffs, SQL, media, lock files, text). Folders show an open or a closed folder (no arrows); tap to open or close.
 - **Status labels**: a Markdown file with a `Status:` line near the top (first 20 lines, not in a code block) gets a label: **sent**, **waiting**, **draft**, **done**, or the first word for anything else. These all work: `Status: sent 2026-11-01`, `STATUS: **SENT …**`, `- Status: for your yes`, `**Status:** drafted; not sent`.
@@ -100,8 +102,12 @@ In the page, any element with `data-artipeek-answer="<id>"` is an answer button:
 3. artipeek appends one JSON line to `file`: `{"at", "uid", "id", "text", "by", "page"}`, where `by` is the
    Access login email or the tailnet device name. If the folder is a git repo it commits only that file, as author
    `artipeek` (message from `message`, `{id}` = the id), then runs `after` (if set) without waiting for it.
-4. The page hears back: matching buttons get `data-artipeek-state="saved"`, and the page gets an
-   `artipeek:answer-saved` event (`detail`: `id`, `text`, `at`), so it can mark the question as sent.
+4. The page hears back: matching buttons get `data-artipeek-state="saved"`, the button whose `data-value` matches
+   gets `data-artipeek-chosen="true"`, and the page gets an `artipeek:answer-saved` event (`detail`: `id`, `text`,
+   `at`, `uid`, `restored`), so it can mark the question as sent. The clicked button's text box is emptied.
+5. **Live reloads don't forget**: every time artipeek serves the page it sends along the latest answer per id from
+   the last 48 hours, and the page hears them again (`restored: true`). So when an agent rewrites the page, the
+   answers you sent stay marked until the page itself shows them as done.
 
 **Who may answer**: the public listener (an Access login from `public.emails`), or a tailnet device listed in
 `answerDevices` (put only phones and tablets there: any process on a listed device could post). **Never plain

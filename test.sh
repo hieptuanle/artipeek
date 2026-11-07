@@ -312,6 +312,13 @@ fr() { curl -s -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$@"
 fr -H "$(hv valid)" "$P/r/one/raw/messages/2026-10-31-x/email.html" | grep -q 'data-artipeek-answer' && ok "answers: framed html in an answers folder gets the answer script" || bad "answers script missing"
 h=$(fr "http://127.0.0.1:$MAIN2/r/two/raw/page.html"); grep -q 'artipeek:"open"' <<<"$h" && ! grep -q 'data-artipeek-answer' <<<"$h" && ok "answers: other folders don't get it" || bad "answers script leaked"
 curl -s -H "$(hv valid)" "$P/r/one/raw/messages/2026-10-31-x/email.html" | grep -q 'data-artipeek-answer' && bad "answers script outside the frame" || ok "answers: no answer script when opened directly"
+# saved answers come back on every load of a page (a live reload must not forget them), safe inside <script>
+c=$(pa "${AH[@]}" --data '{"id":"D20","text":"x</script><b id=pwn>& "}' "$P/r/one/answer"); [ "$c" = 200 ] && ok "answers: tricky text saved" || bad "answers tricky $c"
+h=$(fr -H "$(hv valid)" "$P/r/one/raw/messages/2026-10-31-x/email.html")
+grep -q '"id":"D15","text":"A: only E28\\nthanks"' <<<"$h" && ok "answers: recent answers sent with the page" || bad "answers recent missing"
+grep -q 'x\\u003c/script\\u003e\\u003cb id=pwn\\u003e\\u0026' <<<"$h" && ! grep -q '<b id=pwn>' <<<"$h" && ok "answers: answer text can't close the script tag" || bad "answers escape: $(grep -o 'D20[^}]*' <<<"$h")"
+grep -q 'artipeek:"ready"' <<<"$h" && ok "answers: page asks for its scroll and typed text back" || bad "answers state script"
+h=$(fr "http://127.0.0.1:$MAIN2/r/two/raw/page.html"); grep -q 'artipeek:"ready"' <<<"$h" && grep -q 'var F=0' <<<"$h" && ok "frames keep scroll in every folder, typed text only with answers" || bad "frame state other folder"
 
 grep -q 'eyJ' "$T/pub.log" && bad "token in log" || ok "public: no tokens in log"
 grep -q 'refused (bad signature)' "$T/pub.log" && ok "public: refusals logged with reason" || bad "public log reason"

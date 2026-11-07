@@ -22,6 +22,7 @@ writeFileSync(join(one, "decisions.html"), `<!doctype html><html><body>
 <button id="b" data-artipeek-answer="D15" data-value="B" data-input="#note">D15 B with note</button>
 <input id="note" value="only for E28">
 <textarea id="own"></textarea><button id="send-own" data-artipeek-answer="D16" data-input="#own">Send my answer</button>
+<div style="height:3000px"></div><p id="end">end</p>
 <script>
 document.addEventListener("artipeek:answer-saved", function (e) { document.body.setAttribute("data-saved", e.detail.id + "|" + e.detail.text); });
 setTimeout(function () { parent.postMessage({ artipeek: "answer", id: "D99", text: "sent by the page itself" }, location.origin); }, 200);
@@ -48,7 +49,19 @@ try {
   const errs: string[] = []; p.on("pageerror", (e) => errs.push(String(e)));
   await p.goto(B + "/r/one/view/decisions.html"); await wait(800);
   const sheet = () => p.evaluate(() => { const s = document.querySelector(".answersheet"); return s ? { id: s.querySelector(".aid")!.textContent, text: s.querySelector(".atext")!.textContent, msg: s.querySelector(".amsg")!.textContent } : null; });
-  const frame = () => p.frames().find((f) => f.url().includes("/raw/decisions.html"))!;
+  const frame = () => p.frames().filter((f) => f.url().includes("/raw/decisions.html") && !(f as any).detached).pop()!;
+  // Change the file on disk and wait for artipeek's live reload to swap in a new frame.
+  const reload = async () => {
+    const before = frame().url();
+    const f = join(one, "decisions.html"); writeFileSync(f, readFileSync(f, "utf8") + "\n<!-- edit " + Date.now() + " -->");
+    for (let i = 0; i < 60 && frame()?.url() === before; i++) await Bun.sleep(100);
+    await wait(800);
+    // The page asks for D99 by itself on every load: the sheet opens again, still nothing is saved without Send.
+    const st = await sheet();
+    if (st?.id === "D99") await p.click(".answersheet .acancel");
+    await wait();
+    return frame().url() !== before && st?.id === "D99";
+  };
 
   // The page's own script asked by itself: the sheet shows it, but nothing is saved without Send.
   let s = await sheet();
@@ -69,14 +82,28 @@ try {
   const log = Bun.spawnSync(["git", "-C", one, "log", "--format=%an|%s"]).stdout.toString().trim();
   ok(log === "artipeek|answer D15", "committed as artipeek: " + log);
 
+  // A live reload (the file changed) keeps what was sent, what was typed, and the scroll.
+  await frame().type("#own", "half typed"); await frame().evaluate(() => scrollTo(0, 1200)); await wait(700);
+  ok(await reload(), "file change reloads the frame");
+  const kept = await frame().evaluate(() => ({ chosen: document.getElementById("a")!.getAttribute("data-artipeek-chosen"), state: document.getElementById("b")!.getAttribute("data-artipeek-state"), saved: document.body.getAttribute("data-saved"), own: (document.getElementById("own") as HTMLTextAreaElement).value, y: scrollY }));
+  ok(kept.chosen === "true" && kept.state === "saved" && kept.saved === "D15|A", "after reload: the sent answer is marked again " + JSON.stringify(kept));
+  ok(kept.own === "half typed", "after reload: typed text is back");
+  ok(Math.abs(kept.y - 1200) < 5, "after reload: scroll is back (y=" + kept.y + ")");
+  await frame().evaluate(() => { (document.getElementById("own") as HTMLTextAreaElement).value = ""; document.getElementById("own")!.dispatchEvent(new Event("input", { bubbles: true })); });
+  await wait(500);
+
   // A choice plus a note, and free text.
   await frame().click("#b"); await wait();
   s = await sheet(); ok(s?.text === "B: only for E28", "choice + note joined: " + s?.text);
   await p.click(".answersheet .asend"); await wait(1800);
+  ok((await frame().evaluate(() => (document.getElementById("note") as HTMLInputElement).value)) === "", "the note box empties after its answer is saved");
   await frame().type("#own", "Hold it until Monday"); await frame().click("#send-own"); await wait();
   s = await sheet(); ok(s?.id === "D16" && s?.text === "Hold it until Monday", "free text answer");
   await p.click(".answersheet .asend"); await wait(1000);
   L = lines(); ok(L.length === 3 && L[1].text === "B: only for E28" && L[2].id === "D16", "three lines in order");
+  await wait(1500); ok(await reload(), "second reload");
+  const k2 = await frame().evaluate(() => ({ a: document.getElementById("a")!.getAttribute("data-artipeek-chosen"), b: document.getElementById("b")!.getAttribute("data-artipeek-chosen"), own: (document.getElementById("own") as HTMLTextAreaElement).value, sent: document.getElementById("send-own")!.getAttribute("data-artipeek-state") }));
+  ok(k2.b === "true" && k2.a === null && k2.sent === "saved" && k2.own === "", "after reload: the latest answer per item is marked, sent text not put back " + JSON.stringify(k2));
 
   // An empty free-text answer never opens the sheet.
   await wait(1500); await frame().evaluate(() => { (document.getElementById("own") as HTMLTextAreaElement).value = ""; });

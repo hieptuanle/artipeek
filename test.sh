@@ -239,8 +239,10 @@ grep -q 'X=1\|secret' "$T/server.log" && bad "file contents in log" || ok "no fi
 CERTS=4393; PUB=4394; MAIN2=4392; TOK="$T/tok"; mkdir -p "$TOK"
 bun test-access.ts $CERTS "$TOK" > "$T/access.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 1 100); do [ -f "$TOK/ready" ] && break; sleep 0.1; done
+echo '<html><body><p>two</p></body></html>' > "$ROOT2/page.html"
 cat > "$T/cfg/pub.json" <<EOF
-{ "roots": [ { "name": "one", "path": "$ROOT" }, { "name": "two", "path": "$ROOT2" } ],
+{ "roots": [ { "name": "one", "path": "$ROOT", "answers": { "file": "inbox/answers.jsonl", "message": "answer {id}" } },
+             { "name": "two", "path": "$ROOT2" } ],
   "public": { "port": $PUB, "teamDomain": "test.cloudflareaccess.com", "aud": "test-aud", "emails": ["User@Example.com"],
               "roots": ["one"], "certsUrl": "http://127.0.0.1:$CERTS/cdn-cgi/access/certs" } }
 EOF
@@ -279,6 +281,38 @@ got=""; for _ in $(seq 1 20); do grep -q '^event: change' "$PSSE" && { got=1; br
 [ -n "$got" ] && ok "public: SSE works with a valid token" || bad "public SSE"
 kill $CP 2>/dev/null
 c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$P/r/one/events"); [ "$c" = 403 ] && ok "public: SSE without token -> 403" || bad "public SSE no token $c"
+# --- answers: POST /r/<folder>/answer, only from artipeek's own page, only with a login or an answer device ---
+AH=(-H "$(hv valid)" -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: application/json')
+pa() { curl -s -o "$T/ans.out" -w '%{http_code}' -X POST "$@"; }
+c=$(pa "${AH[@]}" --data '{"id":"D15","text":"A: only E28\r\nthanks","page":"docs/note.md"}' "$P/r/one/answer")
+[ "$c" = 200 ] && grep -q '"ok":true' "$T/ans.out" && ok "answers: valid answer -> 200" || bad "answers valid gave $c $(cat "$T/ans.out")"
+l=$(tail -1 "$ROOT/inbox/answers.jsonl" 2>/dev/null)
+python3 -c "import json,sys;d=json.loads(sys.argv[1]);assert d['id']=='D15' and d['text']=='A: only E28\nthanks' and d['by']=='user@example.com' and d['page']=='docs/note.md' and d['at'] and d['uid']" "$l" 2>/dev/null && ok "answers: one JSON line with id, text, login, page" || bad "answers line: $l"
+[ "$(git -C "$ROOT" log -1 --format='%an|%s' -- inbox/answers.jsonl)" = "artipeek|answer D15" ] && ok "answers: committed as artipeek, message from config" || bad "answers commit: $(git -C "$ROOT" log -1 --format='%an|%s' 2>&1)"
+[ -z "$(git -C "$ROOT" status --porcelain -- inbox/answers.jsonl)" ] && [ "$(git -C "$ROOT" show --stat --format= HEAD | grep -c '|')" = 1 ] && ok "answers: the commit holds only the answers file" || bad "answers commit content"
+c=$(pa -H "$(hv valid)" -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 403 ] && ok "answers: no Sec-Fetch-Site -> 403" || bad "answers no sfs $c"
+c=$(pa -H "$(hv valid)" -H 'Sec-Fetch-Site: cross-site' -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 403 ] && ok "answers: cross-site -> 403" || bad "answers cross-site $c"
+c=$(pa -H "$(hv valid)" -H 'Sec-Fetch-Site: same-origin' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 403 ] && ok "answers: no X-Artipeek header -> 403" || bad "answers no header $c"
+c=$(pa -H "$(hv valid)" -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: text/plain' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 415 ] && ok "answers: not JSON -> 415" || bad "answers ctype $c"
+for body in '{"id":"1abc","text":"A"}' '{"id":"D1;x","text":"A"}' '{"id":"D1","text":"   "}' '{"id":"D1"}' 'nope'; do
+  c=$(pa "${AH[@]}" --data "$body" "$P/r/one/answer"); [ "$c" = 400 ] && ok "answers: 400 for $body" || bad "answers $body gave $c"
+done
+long=$(python3 -c "print('x'*2001)"); c=$(pa "${AH[@]}" --data "{\"id\":\"D1\",\"text\":\"$long\"}" "$P/r/one/answer"); [ "$c" = 400 ] && ok "answers: text over 2000 chars -> 400" || bad "answers long $c"
+c=$(pa "${AH[@]}" --data "{\"id\":\"D1\",\"text\":\"$(python3 -c "print('y'*9000)")\"}" "$P/r/one/answer"); [ "$c" = 413 ] && ok "answers: body over 8 KB -> 413" || bad "answers big $c"
+c=$(pa -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 403 ] && ok "answers: no login -> 403" || bad "answers no login $c"
+c=$(pa -H "$(hv wrongemail)" -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "$P/r/one/answer"); [ "$c" = 403 ] && ok "answers: other email -> 403" || bad "answers wrong email $c"
+c=$(pa -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "http://127.0.0.1:$MAIN2/r/one/answer"); [ "$c" = 403 ] && ok "answers: plain 127.0.0.1 can't answer -> 403" || bad "answers localhost $c"
+c=$(pa "${AH[@]}" --data '{"id":"D1","text":"A"}' "$P/r/two/answer"); [ "$c" = 404 ] && ok "answers: folder not public -> 404" || bad "answers two public $c"
+c=$(pa -H 'Sec-Fetch-Site: same-origin' -H 'X-Artipeek: answer' -H 'Content-Type: application/json' --data '{"id":"D1","text":"A"}' "http://127.0.0.1:$MAIN2/r/two/answer"); [ "$c" = 404 ] && ok "answers: folder without answers -> 404" || bad "answers two $c"
+c=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "$P/r/one/answer" -H "$(hv valid)"); [ "$c" = 405 ] && ok "answers: CORS preflight -> 405" || bad "answers OPTIONS $c"
+[ "$(wc -l < "$ROOT/inbox/answers.jsonl" | tr -d ' ')" = 1 ] && ok "answers: refused requests wrote nothing" || bad "answers extra lines"
+grep -q 'only E28' "$T/pub.log" && bad "answer text in log" || ok "answers: answer text not in the log"
+grep -q 'answer D15 saved in one by user@example.com, committed' "$T/pub.log" && ok "answers: one log line (id, folder, login)" || bad "answers log line"
+fr() { curl -s -H 'Sec-Fetch-Dest: iframe' -H 'Sec-Fetch-Site: same-origin' "$@"; }
+fr -H "$(hv valid)" "$P/r/one/raw/messages/2026-10-31-x/email.html" | grep -q 'data-artipeek-answer' && ok "answers: framed html in an answers folder gets the answer script" || bad "answers script missing"
+h=$(fr "http://127.0.0.1:$MAIN2/r/two/raw/page.html"); grep -q 'artipeek:"open"' <<<"$h" && ! grep -q 'data-artipeek-answer' <<<"$h" && ok "answers: other folders don't get it" || bad "answers script leaked"
+curl -s -H "$(hv valid)" "$P/r/one/raw/messages/2026-10-31-x/email.html" | grep -q 'data-artipeek-answer' && bad "answers script outside the frame" || ok "answers: no answer script when opened directly"
+
 grep -q 'eyJ' "$T/pub.log" && bad "token in log" || ok "public: no tokens in log"
 grep -q 'refused (bad signature)' "$T/pub.log" && ok "public: refusals logged with reason" || bad "public log reason"
 

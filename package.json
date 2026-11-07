@@ -8,6 +8,7 @@
     "dev": "bun --watch server.ts --port 4322",
     "test": "bash test.sh",
     "test:tabs": "bun test-tabs.ts",
+    "test:answers": "bun test-answers.ts",
     "postinstall": "sh scripts/install-hooks.sh"
   },
   "dependencies": {

@@ -3,7 +3,9 @@
 // - Folders ("roots") come from a JSON config file, re-read when it changes.
 // - Only files git would list (tracked + untracked-not-ignored) are listed or served, minus a hard
 //   deny list (env files, keys). Every path resolves inside its root (symlinks too).
-// - GET/HEAD only. Listens on 127.0.0.1 and, if enabled, on this machine's Tailscale IP, where every
+// - GET/HEAD only, except answer buttons (see "answers"): a folder with `answers` set takes POST
+//   /r/<folder>/answer from artipeek's own page, after a click on Send, and appends it to one file.
+// - Listens on 127.0.0.1 and, if enabled, on this machine's Tailscale IP, where every
 //   request is checked with `tailscale whois` against an allow-list of devices.
 // - Optional public listener (config "public") for Cloudflare Tunnel: every request needs a valid
 //   Cloudflare Access JWT, and only public.roots exist there.
@@ -12,7 +14,7 @@
 //   bun server.ts [--config FILE] [--port N]
 
 import { watch, realpathSync, lstatSync, statSync, readdirSync, readFileSync, existsSync, openSync, readSync, closeSync, type FSWatcher } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
@@ -36,7 +38,10 @@ type Config = {
   tailnet?: boolean;
   tailnets?: string[];
   allowDevices?: string[];
-  roots: { name: string; path: string }[];
+  // Tailnet devices whose browser may send answers (see "answers"). Default none. Only phones and tablets
+  // belong here: anything running on a listed device (an agent, a script) could send one.
+  answerDevices?: string[];
+  roots: { name: string; path: string; answers?: AnswersCfg }[];
   // Public listener for Cloudflare Tunnel + Access. Every request needs a valid Access JWT.
   public?: {
     port: number;
@@ -47,6 +52,10 @@ type Config = {
     certsUrl?: string; // tests only: default https://<teamDomain>/cdn-cgi/access/certs
   };
 };
+// Answer buttons: a page in this folder may ask the viewer to send a short answer. artipeek shows its own
+// sheet with the exact text; only a click on Send there saves it, as one JSON line in `file` (inside the
+// folder), committed if the folder is a git repo, then runs `after` (e.g. a sync command) without waiting.
+type AnswersCfg = { file: string; message?: string; after?: string[] };
 function readConfig(): Config {
   const c = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Config;
   if (!Array.isArray(c.roots)) throw new Error("config: roots must be a list");
@@ -417,6 +426,16 @@ class Root {
 const roots = new Map<string, Root>();
 // A scope limits which folders exist for a listener (null = all; the public listener passes its list).
 type Scope = Set<string> | null;
+const answersFor = new Map<string, AnswersCfg>();
+function checkAnswers(a: unknown): AnswersCfg | null {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+  const o = a as Record<string, unknown>;
+  const file = typeof o.file === "string" ? o.file.trim() : "";
+  if (!file || path.isAbsolute(file) || file.includes("\\") || file.split("/").some((x) => x === "" || x === "." || x === ".." || x === ".git")) return null;
+  const after = Array.isArray(o.after) && o.after.length && o.after.every((x) => typeof x === "string" && x) ? (o.after as string[]).map((x, i) => (i ? x : expandHome(x))) : undefined;
+  const message = typeof o.message === "string" && o.message.trim() ? o.message.trim().slice(0, 200) : undefined;
+  return { file, after, message };
+}
 const visibleRoots = (scope: Scope) => [...roots.values()].filter((r) => !scope || scope.has(r.name));
 function loadRoots() {
   let cfg: Config;
@@ -427,6 +446,7 @@ function loadRoots() {
     return;
   }
   const want = new Map<string, string>();
+  const nextAnswers = new Map<string, AnswersCfg>();
   for (const r of cfg.roots) {
     if (!r || typeof r.name !== "string" || !NAME_RE.test(r.name)) { console.log(`artipeek: bad root name ${JSON.stringify(r?.name)}`); continue; }
     try {
@@ -434,10 +454,16 @@ function loadRoots() {
       if (!statSync(dir).isDirectory()) throw new Error("not a folder");
       if (dir === "/" || dir === os.homedir()) throw new Error("too wide (/ or home)");
       want.set(r.name, dir);
+      if (r.answers !== undefined) {
+        const a = checkAnswers(r.answers);
+        if (a) nextAnswers.set(r.name, a); else console.log(`artipeek: root ${r.name}: bad "answers" (needs a relative file inside the folder), answers off`);
+      }
     } catch (e) {
       console.log(`artipeek: root ${r.name} skipped: ${(e as Error).message}`);
     }
   }
+  answersFor.clear();
+  for (const [n, a] of nextAnswers) answersFor.set(n, a);
   for (const [name, root] of roots) {
     if (want.get(name) !== root.dir) { root.stop(); roots.delete(name); console.log(`artipeek: root ${name} removed`); }
   }
@@ -908,6 +934,43 @@ const CLIENT_JS = `
     const d = u.origin === location.origin && parseFile(u);
     if (d) openFile(d.base, d.path, u.hash);
   });
+  // An answer button in an HTML page (see FRAME_ANSWERS): show artipeek's own sheet with the exact text. Only a
+  // real click on Send here posts it; the page itself can't send anything or press this button.
+  let sheet = null;
+  addEventListener("message", (e) => {
+    const f = active && active.pane.querySelector("iframe");
+    if (!f || e.source !== f.contentWindow || !e.data || e.data.artipeek !== "answer") return;
+    const id = String(e.data.id || ""), text = String(e.data.text || "").trim();
+    if (!/^[A-Za-z][A-Za-z0-9._-]{0,31}$/.test(id) || !text || text.length > 2000) return;
+    askAnswer(active, f, id, text);
+  });
+  function askAnswer(t, frame, id, text) {
+    if (sheet) sheet.remove();
+    const s = document.createElement("div");
+    s.className = "answersheet"; s.setAttribute("role", "dialog"); s.setAttribute("aria-modal", "true");
+    s.innerHTML = '<div class="box"><p class="q">Send this answer?</p><p class="aid"></p><pre class="atext"></pre><p class="afrom"></p><p class="amsg" aria-live="polite"></p><div class="btns"><button type="button" class="acancel">Cancel</button><button type="button" class="asend">Send</button></div></div>';
+    s.querySelector(".aid").textContent = id;
+    s.querySelector(".atext").textContent = text;
+    s.querySelector(".afrom").textContent = "From " + t.path;
+    const msg = s.querySelector(".amsg"), send = s.querySelector(".asend");
+    const close = () => { s.remove(); if (sheet === s) sheet = null; };
+    s.querySelector(".acancel").addEventListener("click", close);
+    s.addEventListener("click", (ev) => { if (ev.target === s) close(); });
+    s.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+    send.addEventListener("click", async (ev) => {
+      if (!ev.isTrusted || send.disabled) return;
+      send.disabled = true; msg.textContent = "Saving…";
+      try {
+        const r = await fetch(t.base + "/answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Artipeek": "answer" }, body: JSON.stringify({ id: id, text: text, page: t.path }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) throw new Error(j.error || "HTTP " + r.status);
+        msg.textContent = "Saved at " + new Date(j.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + (j.committed ? "." : " (not committed yet).");
+        try { frame.contentWindow.postMessage({ artipeek: "answer-saved", id: id, text: text, at: j.at }, "*"); } catch (x) {}
+        setTimeout(close, 1500);
+      } catch (err) { msg.textContent = "Not saved: " + err.message; send.disabled = false; }
+    });
+    document.body.appendChild(s); sheet = s; send.focus();
+  }
   addEventListener("popstate", () => {
     const f = parseFile(location);
     if (f) openFile(f.base, f.path, location.hash, "none"); else location.reload();
@@ -986,6 +1049,13 @@ const CLIENT_JS = `
 // Added to an HTML page shown in artipeek's own frame. The sandbox stops the page from opening tabs (and artipeek's
 // pages can't load inside a frame), so a click on a link to a file here asks the parent page to open it.
 const FRAME_LINKS = `<script>document.addEventListener("click",function(e){if(e.defaultPrevented||e.button||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;var a=e.target.closest&&e.target.closest("a[href]");if(!a||a.hasAttribute("download"))return;var u=new URL(a.href);if(u.origin!==location.origin||u.pathname===location.pathname||!/^\\/r\\/[^/]+\\/(view|raw)\\//.test(u.pathname))return;e.preventDefault();parent.postMessage({artipeek:"open",href:u.href},location.origin)})</script>`;
+
+// Added after FRAME_LINKS in folders with answers. A click on an element with data-artipeek-answer="<id>" asks the
+// parent page to send an answer: data-value (a fixed choice) and/or data-input (a CSS selector of a text box in the
+// page), joined as "<value>: <text>". The parent shows its own sheet; nothing is sent from here. When it is saved, the
+// parent tells the page: matching elements get data-artipeek-state="saved" and the document gets an
+// "artipeek:answer-saved" event (detail: id, text, at).
+const FRAME_ANSWERS = `<script>(function(){function txt(b){var v=(b.getAttribute("data-value")||"").trim(),s=b.getAttribute("data-input"),n="";if(s){try{var el=document.querySelector(s);n=el&&typeof el.value==="string"?el.value.trim():""}catch(x){}}return v&&n?v+": "+n:v||n}document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-artipeek-answer]");if(!b)return;e.preventDefault();var t=txt(b);if(!t){b.setAttribute("data-artipeek-state","empty");return}parent.postMessage({artipeek:"answer",id:b.getAttribute("data-artipeek-answer"),text:t},location.origin)});addEventListener("message",function(e){if(e.source!==parent||!e.data||e.data.artipeek!=="answer-saved")return;var id=String(e.data.id);document.querySelectorAll("[data-artipeek-answer]").forEach(function(b){if(b.getAttribute("data-artipeek-answer")===id)b.setAttribute("data-artipeek-state","saved")});document.dispatchEvent(new CustomEvent("artipeek:answer-saved",{detail:{id:id,text:String(e.data.text||""),at:String(e.data.at||"")}}))})})()</script>`;
 
 const CSS = ICON_CSS + `
 :root { --tabh:0px; color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
@@ -1098,6 +1168,19 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 /* highlight.js: GitHub-like light/dark */
 .hljs-comment,.hljs-quote{color:#6e7781}.hljs-keyword,.hljs-selector-tag,.hljs-type{color:#cf222e}.hljs-string,.hljs-regexp,.hljs-addition{color:#0a3069}.hljs-number,.hljs-literal,.hljs-built_in,.hljs-attr,.hljs-variable,.hljs-template-variable{color:#0550ae}.hljs-title,.hljs-section,.hljs-name{color:#8250df}.hljs-deletion{color:#82071e}.hljs-meta{color:#953800}
 @media (prefers-color-scheme: dark){.hljs-comment,.hljs-quote{color:#8b949e}.hljs-keyword,.hljs-selector-tag,.hljs-type{color:#ff7b72}.hljs-string,.hljs-regexp,.hljs-addition{color:#a5d6ff}.hljs-number,.hljs-literal,.hljs-built_in,.hljs-attr,.hljs-variable,.hljs-template-variable{color:#79c0ff}.hljs-title,.hljs-section,.hljs-name{color:#d2a8ff}.hljs-deletion{color:#ffa198}.hljs-meta{color:#ffa657}}
+/* answer sheet: artipeek's own confirm step for answer buttons in a page */
+.answersheet { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; padding:16px; }
+.answersheet .box { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; width:min(520px, 100%); padding:16px; box-shadow:0 10px 40px rgba(0,0,0,.35); }
+.answersheet .q { margin:0 0 4px; font-weight:600; font-size:16px; }
+.answersheet .aid { margin:0; color:var(--muted); font-size:13px; }
+.answersheet pre.atext { white-space:pre-wrap; word-break:break-word; background:var(--code); padding:10px 12px; border-radius:8px; margin:8px 0; font-family:inherit; font-size:16px; max-height:40vh; overflow:auto; }
+.answersheet .afrom { margin:0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.answersheet .amsg { min-height:1.4em; margin:8px 0 0; font-size:14px; }
+.answersheet .btns { display:flex; gap:10px; justify-content:flex-end; margin-top:8px; }
+.answersheet button { font:inherit; padding:10px 18px; border-radius:8px; border:1px solid var(--line); background:var(--side); color:var(--fg); cursor:pointer; }
+.answersheet button.asend { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+.answersheet button:disabled { opacity:.6; cursor:default; }
+@media (max-width: 760px) { .answersheet { align-items:flex-end; } }
 /* phone: the sidebar becomes a drawer */
 @media (max-width: 760px) {
   body.app { display:block; }
@@ -1184,7 +1267,14 @@ const RAW_CSP_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'uns
 const notFound = () => new Response("Not found", { status: 404, headers: SEC_HEADERS });
 const decode = (s: string): string | null => { try { return decodeURIComponent(s); } catch { return null; } };
 
-async function handle(req: Request, scope: Scope = null): Promise<Response> {
+// Who is asking: a Cloudflare Access login (public listener), a tailnet device, or null (127.0.0.1).
+type Who = { email: string } | { device: string } | null;
+
+async function handle(req: Request, scope: Scope = null, who: Who = null): Promise<Response> {
+  if (req.method === "POST") {
+    const am = /^\/r\/([^/]+)\/answer$/.exec(new URL(req.url).pathname);
+    if (am) return answer(req, am[1], scope, who);
+  }
   if (req.method !== "GET" && req.method !== "HEAD")
     return new Response("Read-only", { status: 405, headers: { ...SEC_HEADERS, Allow: "GET, HEAD" } });
   const url = new URL(req.url);
@@ -1242,7 +1332,8 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
     const inOurFrame = req.headers.get("sec-fetch-dest") === "iframe" && req.headers.get("sec-fetch-site") === "same-origin";
     const type = MIME[ext] ?? "text/plain; charset=utf-8";
     const framed = (ext === "html" || ext === "htm") && inOurFrame;
-    return new Response(framed ? Buffer.concat([await readFile(f.abs), Buffer.from(FRAME_LINKS)]) : Bun.file(f.abs), {
+    const inject = FRAME_LINKS + (answersFor.has(root.name) ? FRAME_ANSWERS : "");
+    return new Response(framed ? Buffer.concat([await readFile(f.abs), Buffer.from(inject)]) : Bun.file(f.abs), {
       headers: {
         ...SEC_HEADERS,
         "Content-Type": type,
@@ -1259,6 +1350,74 @@ async function handle(req: Request, scope: Scope = null): Promise<Response> {
   return new Response(filePage(root, f.rel, mainHtml, nonce, sort, scope), {
     headers: { ...HTML, ...(fromParam ? { "Set-Cookie": sortCookie(sort) } : {}), "Content-Security-Policy": pageCsp(nonce) },
   });
+}
+
+// ---------- answers ----------
+const ANSWER_ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,31}$/;
+const ANSWER_DEVICES = new Set((config0.answerDevices ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean));
+const answerQueue = new Map<string, Promise<unknown>>();
+const jsonRes = (status: number, o: unknown) => new Response(JSON.stringify(o), { status, headers: { ...SEC_HEADERS, "Content-Type": "application/json" } });
+
+async function answer(req: Request, rawName: string, scope: Scope, who: Who): Promise<Response> {
+  const name = decode(rawName);
+  const root = name && (!scope || scope.has(name)) ? roots.get(name) : undefined;
+  const cfg = root && answersFor.get(root.name);
+  if (!root || !cfg) return notFound();
+  // Never from plain 127.0.0.1: every local process (an agent, a script) can reach that port. A tailnet device must be
+  // in answerDevices; the public listener has already checked the Access login.
+  const by = who && "email" in who ? who.email : who && "device" in who && ANSWER_DEVICES.has(who.device.split(".")[0]) ? who.device : "";
+  if (!by) return jsonRes(403, { ok: false, error: "answers need the public link (login) or a device in answerDevices" });
+  // Only a same-origin fetch from artipeek's own page: the browser sets Sec-Fetch-Site (a page can't), and the custom
+  // header + JSON type turn any cross-site request into a CORS preflight, which gets 405.
+  if (req.headers.get("sec-fetch-site") !== "same-origin" || req.headers.get("x-artipeek") !== "answer")
+    return jsonRes(403, { ok: false, error: "not from artipeek's page" });
+  if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return jsonRes(415, { ok: false, error: "JSON only" });
+  const raw = await req.text();
+  if (raw.length > 8192) return jsonRes(413, { ok: false, error: "too big" });
+  let b: any;
+  try { b = JSON.parse(raw); } catch { return jsonRes(400, { ok: false, error: "bad JSON" }); }
+  const id = typeof b?.id === "string" ? b.id : "";
+  const text = typeof b?.text === "string" ? b.text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim() : "";
+  if (!ANSWER_ID_RE.test(id) || !text || text.length > 2000) return jsonRes(400, { ok: false, error: "bad id or text" });
+  const page = typeof b?.page === "string" && b.page.length <= 400 ? root.resolve(b.page)?.rel ?? "" : "";
+  const rec = { at: new Date().toISOString(), uid: randomBytes(6).toString("hex"), id, text, by, page };
+  const job = (answerQueue.get(root.name) ?? Promise.resolve()).then(() => saveAnswer(root, cfg, rec));
+  answerQueue.set(root.name, job.catch(() => {}));
+  try {
+    const committed = await job;
+    console.log(`artipeek: answer ${id} saved in ${root.name} by ${by}${committed ? ", committed" : ", not committed"}`);
+    return jsonRes(200, { ok: true, at: rec.at, uid: rec.uid, committed });
+  } catch (e) {
+    console.log(`artipeek: answer ${id} for ${root.name} not saved: ${(e as Error).message}`);
+    return jsonRes(500, { ok: false, error: "not saved" });
+  }
+}
+
+// Appends one line; returns true if it was committed. The file must stay inside the folder (no symlinks out).
+async function saveAnswer(root: Root, cfg: AnswersCfg, rec: Record<string, string>): Promise<boolean> {
+  const file = path.join(root.dir, cfg.file);
+  await mkdir(path.dirname(file), { recursive: true });
+  const parent = realpathSync(path.dirname(file));
+  if (parent !== root.dir && !parent.startsWith(root.dir + path.sep)) throw new Error("answers file outside the folder");
+  try { if (lstatSync(file).isSymbolicLink()) throw new Error("answers file is a symlink"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+  await appendFile(file, JSON.stringify(rec) + "\n", { mode: 0o644 });
+  if (!existsSync(path.join(root.dir, ".git"))) return false;
+  const rel = path.relative(root.dir, file);
+  const git = (args: string[]) => Bun.spawnSync(["git", "-C", root.dir, "-c", "user.name=artipeek", "-c", `user.email=artipeek@${os.hostname()}`, "-c", "commit.gpgsign=false", ...args], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const msg = (cfg.message ?? "answer {id} via artipeek").replace(/\{id\}/g, rec.id);
+  let ok = false;
+  for (let i = 0; i < 5 && !ok; i++) { // another git command (a sync) may hold the index lock for a moment
+    if (i) await Bun.sleep(300 * i);
+    ok = git(["add", "--", rel]) && git(["commit", "-q", "-m", msg, "--", rel]);
+  }
+  if (!ok) { console.log(`artipeek: answers in ${root.name}: git commit failed; the line is saved, the next answer commits it`); return false; }
+  if (cfg.after) {
+    try {
+      const pr = Bun.spawn(cfg.after, { cwd: root.dir, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      pr.exited.then((c) => { if (c) console.log(`artipeek: answers in ${root.name}: after-command exited ${c}`); });
+    } catch (e) { console.log(`artipeek: answers in ${root.name}: after-command failed to start: ${(e as Error).message}`); }
+  }
+  return true;
 }
 
 const server = Bun.serve({ hostname: HOST, port: PORT, idleTimeout: 0 /* SSE streams stay open */, fetch: (req) => handle(req) });
@@ -1303,7 +1462,7 @@ if (config0.tailnet) {
         console.log(`artipeek (tailnet): refused ${ip} (${name || "unknown"}) ${req.method} ${new URL(req.url).pathname.slice(0, 80)}`);
         return new Response("This device is not allowed.\n", { status: 403, headers: { ...SEC_HEADERS, "Content-Type": "text/plain" } });
       }
-      return handle(req);
+      return handle(req, null, { device: name });
     };
     const check = () => {
       const r = Bun.spawnSync(["tailscale", "ip", "-4"], { stdout: "pipe", stderr: "pipe" });
@@ -1418,7 +1577,7 @@ if (config0.public) {
           console.log(`artipeek (public): refused (${v.reason}) ${req.method} ${new URL(req.url).pathname.slice(0, 80)}`);
           return new Response("Forbidden\n", { status: 403, headers: { ...SEC_HEADERS, "Content-Type": "text/plain" } });
         }
-        return handle(req, scope);
+        return handle(req, scope, { email: v.email });
       },
     });
     console.log(`artipeek (public): http://${HOST}:${srv.port} (Cloudflare Access ${pub.teamDomain}, roots=${[...scope].join(",")})`);

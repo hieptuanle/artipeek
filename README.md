@@ -68,8 +68,45 @@ ln -s ~/projects/artipeek/cli.ts ~/.local/bin/artipeek   # admin CLI
 ```
 
 - **roots**: add or remove a folder and save. The server picks it up within a second, with no restart. Names: letters, digits, `.`, `_`, `-`. Your home folder and `/` are refused (too wide).
-- **port, tailnet, tailnets, allowDevices, public**: read at start. After changing them, restart the service (`artipeek restart`). The CLI does this for you.
+- **answers** (per folder, optional): see "Answer buttons". Picked up like **roots**, with no restart.
+- **port, tailnet, tailnets, allowDevices, answerDevices, public**: read at start. After changing them, restart the service (`artipeek restart`). The CLI does this for you.
 - `config.example.json` has every option.
+
+## Answer buttons (optional)
+
+artipeek is read-only, with one exception you switch on per folder: an HTML page in that folder can ask the person
+reading it for a short answer (pick a choice, or type one), and artipeek saves it into the folder. Made for agents
+that keep a page of questions for you: you answer on the phone, an agent reads the file and carries on.
+
+```json
+{ "name": "desk", "path": "~/projects/desk",
+  "answers": { "file": "inbox/answers.jsonl", "message": "answer {id}", "after": ["~/.local/bin/my-sync", "desk"] } }
+```
+
+In the page, any element with `data-artipeek-answer="<id>"` is an answer button:
+
+```html
+<button data-artipeek-answer="D15" data-value="A">A</button>
+<input id="d15-note"><button data-artipeek-answer="D15" data-value="B" data-input="#d15-note">B, with my note</button>
+<textarea id="d16"></textarea><button data-artipeek-answer="D16" data-input="#d16">Send my answer</button>
+```
+
+`data-value` is a fixed choice, `data-input` a CSS selector of a text box in the page; with both, the text is
+`<value>: <note>`. Ids: a letter, then up to 31 letters, digits, `.`, `_`, `-`. Text: up to 2,000 characters.
+
+1. A click asks artipeek; artipeek shows **its own sheet** (outside the page) with the id and the exact text.
+2. Only a real click on **Send** in that sheet posts it. The page can open the sheet, but it can't press Send,
+   change what the sheet shows, or send anything itself (it still has no network).
+3. artipeek appends one JSON line to `file`: `{"at", "uid", "id", "text", "by", "page"}`, where `by` is the
+   Access login email or the tailnet device name. If the folder is a git repo it commits only that file, as author
+   `artipeek` (message from `message`, `{id}` = the id), then runs `after` (if set) without waiting for it.
+4. The page hears back: matching buttons get `data-artipeek-state="saved"`, and the page gets an
+   `artipeek:answer-saved` event (`detail`: `id`, `text`, `at`), so it can mark the question as sent.
+
+**Who may answer**: the public listener (an Access login from `public.emails`), or a tailnet device listed in
+`answerDevices` (put only phones and tablets there: any process on a listed device could post). **Never plain
+127.0.0.1**, because every local process can reach it, agents included. Folders without `answers` get 404, and
+their pages don't get the button script.
 
 ## Admin CLI: `artipeek`
 
@@ -97,7 +134,11 @@ artipeek logs -f | restart | test | undo-config
 - **Which files**: only what git would list in each folder (tracked + new files not ignored by `.gitignore`). A folder without git: all files except `.git` and `node_modules`. `.git/` is never served.
 - **Never shown, even if tracked**: `.env` and `.env.*` (but `.env.example` / `.sample` / `.template` are shown), `.netrc`, `.pgpass`, `.npmrc`, `id_rsa` / `id_ed25519` style keys, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `*.ppk`, `*.keystore`, `*.jks`.
 - **Paths**: every path must resolve inside its folder (symlinks too). `..`, absolute paths, backslashes and symlinks pointing outside give 404.
-- **Read-only**: GET/HEAD only, others get 405.
+- **Read-only**: GET/HEAD only, others get 405. One exception, only in folders with `answers` set:
+  `POST /r/<folder>/answer` (see "Answer buttons"). It needs an Access login or a device in `answerDevices` (never
+  plain 127.0.0.1), `Sec-Fetch-Site: same-origin` (set by the browser, not by pages), an `X-Artipeek: answer` header and a
+  JSON body under 8 KB (so a cross-site request needs a CORS preflight, which gets 405). It appends one line to one
+  file inside the folder (no symlinks out) and commits only that file. The answer text is never logged.
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
 - **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network). `.html` gets `allow-scripts` with inline scripts only when the browser loads it in artipeek's own file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`); that page's `frame-src 'self'` keeps the frame from navigating away. Never `allow-same-origin`.
@@ -151,6 +192,11 @@ bash test.sh  # or: artipeek test
 ```
 
 The tests use temporary folders and a temporary config, never your repos. They cover: the home page; the sidebar, folder switcher and phone menu; Markdown (tables, code, tasks, footnotes, front matter, wikilinks, relative and `/` links); HTML in a sandbox (inline scripts only inside the file page; opened directly or framed by another site: no scripts; other raw files: no scripts); status labels (file, folder, README, code blocks ignored, live update); file-type icons; path escapes, other folders, `.git`, ignored and denied files → 404; POST → 405; adding a folder by editing the config; refusing a bad name or the home folder; sort and cookie; live events per folder within 2 s; no file contents in the log.
+
+Answer buttons are tested in a real browser with `bun run test:answers` (same Chromium setup): a page's own message
+only opens the sheet, Cancel saves nothing, Send saves one line and commits it, the page hears back, choice + note
+and free text, empty answers. `test.sh` covers the endpoint: login, device and same-origin checks, bad input,
+size limits, folders without answers, nothing logged.
 
 App tabs are tested in a real browser with `bun run test:tabs` (needs Chromium; set `CHROME_PATH` if it isn't at `/usr/bin/chromium`): links open and switch tabs, the file list highlight follows, switching back makes no request and keeps the scroll, HTML frames aren't reloaded, links inside HTML pages, Back, live update of a hidden tab, closing, reload, a second folder, a separate list per browser tab, phone width.
 

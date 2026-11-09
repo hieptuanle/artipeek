@@ -508,6 +508,9 @@ function resolveRel(fromRel: string, href: string): string | null {
 const isExternal = (href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//");
 const slug = (s: string) => encodeURIComponent(String(s).trim().toLowerCase().replace(/\s+/g, "-"));
 
+// A code block with a Copy button (the click is handled in CLIENT_JS).
+const codeBlock = (pre: string) => `<div class="codeblock"><button type="button" class="copy" data-copy aria-label="Copy code">Copy</button>${pre}</div>`;
+
 function makeMd(root: Root, currentRel: string) {
   const md = new MarkdownIt({
     html: true, // page CSP blocks scripts in rendered HTML
@@ -518,6 +521,9 @@ function makeMd(root: Root, currentRel: string) {
     .use(anchor, { permalink: anchor.permalink.headerLink() })
     .use(footnote)
     .use(taskLists, { enabled: false, label: true });
+
+  const fence = md.renderer.rules.fence!;
+  md.renderer.rules.fence = (...args) => codeBlock(fence(...args));
 
   // Obsidian [[name]], [[name|alias]], [[name#heading]]
   md.inline.ruler.before("link", "wikilink", (state, silent) => {
@@ -634,7 +640,7 @@ async function renderMain(root: Root, rel: string, abs: string): Promise<string>
     return `${head}${cut}<article class="markdown">${fm}${makeMd(root, rel).render(body)}</article>`;
   }
   const lang = EXT_LANG[ext] ?? (ext === "" ? "bash" : undefined);
-  return `${head}${cut}<pre class="hljs code"><code>${highlight(text, lang)}</code></pre>`;
+  return `${head}${cut}${codeBlock(`<pre class="hljs code"><code>${highlight(text, lang)}</code></pre>`)}`;
 }
 
 type Sort = "name" | "mtime";
@@ -697,7 +703,28 @@ const CLIENT_JS = `
     const t = e.target.closest ? e.target : null;
     if (t && t.closest("[data-menu]")) { body.classList.toggle("nav-open"); return; }
     if (t && t.closest("#scrim")) closeNav();
+    const c = t && t.closest("[data-copy]");
+    if (c) copyCode(c);
   });
+
+  // Copy button on code blocks. navigator.clipboard needs a secure context, so plain http on the LAN falls back to execCommand.
+  async function copyCode(btn) {
+    const pre = btn.parentElement.querySelector("pre");
+    if (!pre) return;
+    const text = pre.innerText.replace(/\n$/, "");
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand("copy"); } catch {}
+      ta.remove();
+    }
+    btn.textContent = ok ? "Copied" : "Failed";
+    btn.classList.toggle("done", ok);
+    clearTimeout(btn._t);
+    btn._t = setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
+  }
   addEventListener("keydown", (e) => { if (e.key === "Escape") closeNav(); });
 
   function ages(scope) {
@@ -1192,6 +1219,11 @@ a { color:var(--accent); }
 .markdown code { font-family:ui-monospace, "JetBrains Mono", monospace; font-size:.88em; background:var(--code); padding:.15em .35em; border-radius:4px; overflow-wrap:anywhere; }
 .markdown pre code { background:none; padding:0; overflow-wrap:normal; }
 pre.hljs { background:var(--code); padding:12px 14px; border-radius:6px; overflow:auto; font: 13px/1.5 ui-monospace, "JetBrains Mono", monospace; }
+.codeblock { position:relative; }
+.codeblock button.copy { position:absolute; top:6px; right:6px; font:12px/1 system-ui, sans-serif; padding:5px 9px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--muted); cursor:pointer; opacity:0; transition:opacity .15s; }
+.codeblock:hover button.copy, .codeblock button.copy:focus-visible, .codeblock button.copy.done { opacity:1; }
+.codeblock button.copy.done { color:var(--accent); border-color:var(--accent); }
+@media (hover: none) { .codeblock button.copy { opacity:.85; } }
 .markdown blockquote { margin:0; padding:0 1em; color:var(--muted); border-left:.25em solid var(--line); }
 .markdown img { max-width:100%; }
 .markdown li.task-list-item { list-style:none; margin-left:-1.3em; }

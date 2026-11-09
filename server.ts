@@ -711,7 +711,7 @@ const CLIENT_JS = `
   async function copyCode(btn) {
     const pre = btn.parentElement.querySelector("pre");
     if (!pre) return;
-    const text = pre.innerText.replace(/\n$/, "");
+    const text = pre.innerText.replace(/\\n$/, "");
     let ok = false;
     try { await navigator.clipboard.writeText(text); ok = true; } catch {
       const ta = document.createElement("textarea");

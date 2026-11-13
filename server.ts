@@ -839,7 +839,8 @@ const CLIENT_JS = `
     const url = fileUrl(t, "view") + (hash || "");
     if (how === "push") history.pushState(null, "", url);
     else if (how === "replace") history.replaceState(null, "", url);
-    document.title = nameOf(t.path) + " · artipeek";
+    // Parent folder first (or the root's name at the top): many folders hold a decisions.html or README.md.
+    document.title = nameOf(dirOf(t.path) || t.base.slice(3)) + "/" + nameOf(t.path) + " · artipeek";
     drawTabs();
     if (t.base !== shownBase) showFolder(t.base);
     else markTree();
@@ -1300,7 +1301,7 @@ function shell(opts: { title: string; bodyClass: string; data?: Record<string, s
 function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope): string {
   const aside = `<aside><header><div class="headrow">${rootSwitcher(root.name, scope)}<span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
 <nav id="tree">${renderSidebar(root, current, sort)}</nav></aside>`;
-  return shell({ title: path.posix.basename(current) || root.name, bodyClass: "app", data: { base: root.base, path: current }, aside, main: `<nav id="tabs" aria-label="Open files" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
+  return shell({ title: current ? `${path.posix.basename(path.posix.dirname(current) === "." ? root.name : path.posix.dirname(current))}/${path.posix.basename(current)}` : root.name, bodyClass: "app", data: { base: root.base, path: current }, aside, main: `<nav id="tabs" aria-label="Open files" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
 }
 
 function homePage(nonce: string, scope: Scope): string {

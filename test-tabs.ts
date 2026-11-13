@@ -47,7 +47,7 @@ try {
   await p.evaluate(() => (document.querySelector('.markdown a[href$="b/second.md"]') as any).click()); await wait();
   s = await st(p);
   ok(s.tabs.length === 2 && s.act === "second.md" && s.vis === "second.md", "md link opens new tab and switches: " + JSON.stringify(s.tabs));
-  ok(s.cur.length === 1 && s.cur[0] === "b/second.md", "sidebar highlight follows"); ok(s.url === "/r/one/view/b/second.md" && s.title.startsWith("second.md"), "url and title follow"); ok(s.y === 0, "new tab at top");
+  ok(s.cur.length === 1 && s.cur[0] === "b/second.md", "sidebar highlight follows"); ok(s.url === "/r/one/view/b/second.md" && s.title.startsWith("b/second.md"), "url and title follow"); ok(s.y === 0, "new tab at top");
   // instant switch: no network
   let reqs = 0; const cnt = () => reqs++; p.on("request", cnt);
   await p.evaluate(() => (document.querySelectorAll("#tabs .tab a")[0] as any).click()); 

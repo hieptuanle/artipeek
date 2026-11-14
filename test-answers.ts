@@ -22,6 +22,9 @@ writeFileSync(join(one, "decisions.html"), `<!doctype html><html><body>
 <button id="b" data-artipeek-answer="D15" data-value="B" data-input="#note">D15 B with note</button>
 <input id="note" value="only for E28">
 <textarea id="own"></textarea><button id="send-own" data-artipeek-answer="D16" data-input="#own">Send my answer</button>
+<p>Q1</p><button id="q1a" data-artipeek-answer="D17" data-question="Q1" data-value="A">A</button><button id="q1b" data-artipeek-answer="D17" data-question="Q1" data-value="B">B</button>
+<p>Q2</p><button id="q2a" data-artipeek-answer="D17" data-question="Q2" data-value="A">A</button><button id="q2b" data-artipeek-answer="D17" data-question="Q2" data-value="Yes">Yes</button>
+<textarea id="d17-note"></textarea><button id="d17-send" data-artipeek-answer="D17" data-artipeek-picks data-input="#d17-note">Send answers</button>
 <div style="height:3000px"></div><p id="end">end</p>
 <script>
 document.addEventListener("artipeek:answer-saved", function (e) { document.body.setAttribute("data-saved", e.detail.id + "|" + e.detail.text); });
@@ -104,6 +107,28 @@ try {
   await wait(1500); ok(await reload(), "second reload");
   const k2 = await frame().evaluate(() => ({ a: document.getElementById("a")!.getAttribute("data-artipeek-chosen"), b: document.getElementById("b")!.getAttribute("data-artipeek-chosen"), own: (document.getElementById("own") as HTMLTextAreaElement).value, sent: document.getElementById("send-own")!.getAttribute("data-artipeek-state") }));
   ok(k2.b === "true" && k2.a === null && k2.sent === "saved" && k2.own === "", "after reload: the latest answer per item is marked, sent text not put back " + JSON.stringify(k2));
+
+  // Several questions in one decision: picks don't send; one button sends them all.
+  const picks = () => frame().evaluate(() => ["q1a", "q1b", "q2a", "q2b"].map((i) => { const e = document.getElementById(i)!; return (e.getAttribute("data-artipeek-picked") ? "P" : "-") + (e.getAttribute("data-artipeek-chosen") ? "C" : "-") + (e.getAttribute("aria-pressed") === "true" ? "t" : "f"); }).join(" "));
+  await wait(1500);
+  ok((await picks()) === "--f --f --f --f", "picks start off, aria-pressed=false: " + (await picks()));
+  await frame().click("#q1b"); await frame().click("#q1a"); await wait();
+  ok(!(await sheet()) && (await picks()) === "P-t --f --f --f", "a pick opens no sheet; one pick per question: " + (await picks()));
+  await frame().click("#q2b"); await frame().click("#q2b"); await wait();
+  ok((await picks()) === "P-t --f --f --f", "a second click takes a pick off: " + (await picks()));
+  await frame().click("#d17-send"); await wait();
+  s = await sheet(); ok(s?.id === "D17" && s?.text === "Q1 A, Q2 —", "a question with no pick is sent as —: " + s?.text);
+  await p.click(".answersheet .acancel"); await wait();
+  await frame().click("#q2b"); await wait(700);
+  ok(await reload(), "reload while picking");
+  ok((await picks()) === "P-t --f --f P-t", "after reload: picks not yet sent are back: " + (await picks()));
+  await frame().type("#d17-note", "Q2 only this week"); await frame().click("#d17-send"); await wait();
+  s = await sheet(); ok(s?.text === "Q1 A, Q2 Yes: Q2 only this week", "all picks plus a note: " + s?.text);
+  await p.click(".answersheet .asend"); await wait(1000);
+  L = lines(); ok(L.length === 4 && L[3].id === "D17" && L[3].text === "Q1 A, Q2 Yes: Q2 only this week", "saved as one line");
+  ok((await picks()) === "PCt --f --f PCt", "saved picks are marked chosen: " + (await picks()));
+  await wait(1500); ok(await reload(), "reload after sending picks");
+  ok((await picks()) === "PCt --f --f PCt", "after reload: sent picks marked again: " + (await picks()));
 
   // An empty free-text answer never opens the sheet.
   await wait(1500); await frame().evaluate(() => { (document.getElementById("own") as HTMLTextAreaElement).value = ""; });

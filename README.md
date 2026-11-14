@@ -96,6 +96,27 @@ In the page, any element with `data-artipeek-answer="<id>"` is an answer button:
 `data-value` is a fixed choice, `data-input` a CSS selector of a text box in the page; with both, the text is
 `<value>: <note>`. Ids: a letter, then up to 31 letters, digits, `.`, `_`, `-`. Text: up to 2,000 characters.
 
+**Several questions in one decision**: give each choice a `data-question`. Such a button is a pick, not a send: a
+tap turns it on (and the other choices of that question off), a second tap turns it off. One button with
+`data-artipeek-picks` sends all the picks of that id at once, in page order:
+
+```html
+<p>Q1 Who may read invoices?</p>
+<button data-artipeek-answer="D201" data-question="Q1" data-value="A">A. the bot only</button>
+<button data-artipeek-answer="D201" data-question="Q1" data-value="C">C. nobody</button>
+<p>Q2 Add the Flexi-time position?</p>
+<button data-artipeek-answer="D201" data-question="Q2" data-value="A">A. yes</button>
+<button data-artipeek-answer="D201" data-question="Q2" data-value="B">B. leave it</button>
+<textarea id="d201-note"></textarea>
+<button data-artipeek-answer="D201" data-artipeek-picks data-input="#d201-note">Send my answers</button>
+```
+
+This sends `Q1 A, Q2 B`, or `Q1 A, Q2 —` when Q2 has no pick, plus `: <note>` when the box has text (artipeek's
+sheet shows it before Send). A pick that is on has `data-artipeek-picked="true"` and `aria-pressed="true"`, so
+style it in the page, for example `[data-artipeek-picked="true"]{background:var(--accent);color:#fff}`. Picks
+not yet sent survive a live reload; after a save, the sent picks get `data-artipeek-chosen="true"`. The page
+also gets an `artipeek:pick` event (`detail`: `id`, `question`, `value`, empty when turned off).
+
 1. A click asks artipeek; artipeek shows **its own sheet** (outside the page) with the id and the exact text.
 2. Only a real click on **Send** in that sheet posts it. The page can open the sheet, but it can't press Send,
    change what the sheet shows, or send anything itself (it still has no network).

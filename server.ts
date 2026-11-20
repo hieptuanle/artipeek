@@ -1438,9 +1438,9 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
 
   const am = /^\/(view|raw|part\/main|part\/status)\/(.+)$/.exec(rest);
   if (!am) return notFound();
-  // An old bookmark of the folder's own decisions page goes to the hub, once the folder has decisions there.
-  // ?file=1 still shows the file.
-  if (am[1] === "view" && am[2] === "decisions.html" && !url.searchParams.has("file") && Object.keys(hub.counts([root.name])).length)
+  // An old bookmark of the folder's own decisions page (any file named decisions.html, e.g. docs/explainers/) goes to
+  // the hub, once the folder has decisions there. ?file=1 still shows the file.
+  if (am[1] === "view" && /(^|\/)decisions\.html$/.test(am[2]) && !url.searchParams.has("file") && Object.keys(hub.counts([root.name])).length)
     return Response.redirect(`${root.base}/decisions`, 302);
   const rel = decode(am[2]);
   const f = rel ? root.resolve(rel) : null;

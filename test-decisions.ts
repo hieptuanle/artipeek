@@ -237,6 +237,9 @@ try {
   // ----- old bookmark -----
   const red = await fetch(`${L}/r/one/view/decisions.html`, { redirect: "manual" });
   ok(red.status === 302 && red.headers.get("location")?.endsWith("/r/one/decisions"), "an old decisions.html link goes to the hub page");
+  const red2 = await fetch(`${L}/r/one/view/docs/explainers/decisions.html`, { redirect: "manual" });
+  ok(red2.status === 302 && red2.headers.get("location")?.endsWith("/r/one/decisions"), "…also one in a subfolder");
+  ok((await fetch(`${L}/r/one/view/decisions.html?file=1`, { redirect: "manual" })).status !== 302, "?file=1 still opens the file");
   ok((Bun.spawnSync(["stat", "-c", "%a", join(T, "cfg", "decisions.db")]).stdout.toString().trim()) === "600", "the database file is private (600)");
   ok(!errs.length, `no page errors${errs.length ? ": " + errs.join(" | ") : ""}`);
 } catch (e) {

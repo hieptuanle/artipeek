@@ -141,6 +141,8 @@ One place for every folder's decisions that agents want from you, in one databas
 **`/decisions`** (every folder, with a project filter and a project tag on each card) and
 **`/r/<folder>/decisions`** (one folder). The home page shows how many are open and urgent.
 
+- **Old links**: once a folder has decisions in the hub, a link to its `decisions.html` (at any depth) opens the hub
+  page instead (`?file=1` still shows the file).
 - **Same shape everywhere**: agents send data (title, Markdown context, choices, deadline, links), not HTML.
   Answer buttons work the same as on any page here: artipeek's own sheet confirms, only you can send.
 - **Order**: oldest first, the order they were raised in. Filters at the top: Open / Later / Answered / Closed / All,

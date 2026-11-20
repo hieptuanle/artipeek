@@ -5,13 +5,15 @@ Read files from chosen folders (repos) in a browser, mainly on the phone, while 
 Built with [Bun](https://bun.sh). One server file, no build step, no client framework.
 
 <p>
-  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: one card per folder with its newest files, file-type icons and status labels">
-  <img src="docs/screenshots/phone-markdown.png" width="200" alt="A Markdown file with its status bar, front matter and a table">
-  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: folders and files with icons and status labels (sent, waiting, draft)">
+  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: open and urgent decisions per folder, then one card per folder with its newest files, file-type icons and status labels">
+  <img src="docs/screenshots/phone-markdown.png" width="200" alt="Two tabs open; a Markdown file with its status bar, front matter and a table">
+  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: Decisions with its counts, Recent files of every folder, then the folders, with icons and status labels (sent, waiting, draft)">
   <img src="docs/screenshots/phone-dark-code.png" width="200" alt="Highlighted code in dark mode">
 </p>
 
-<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left. An email draft shows its status, read from the README.md next to it">
+<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left, tabs on top. An email draft shows its status, read from the README.md next to it; its own inline script ran in the sandbox">
+
+<img src="docs/screenshots/desktop-decisions.png" alt="The Decisions tab: open decisions of every folder, oldest first, an urgent one with its deadline, links between decisions, answer options, and the outline on the right">
 
 <sub>Screenshots use made-up demo folders.</sub>
 

@@ -7,6 +7,7 @@
     { "name": "notes", "path": "~/notes" },
     { "name": "my-project", "path": "~/projects/my-project" }
   ],
+  "decisions": { "db": "~/.config/artipeek/decisions.db" },
   "public": {
     "port": 4323,
     "hostname": "artipeek.example.com",

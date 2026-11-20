@@ -94,6 +94,35 @@ async function syncPolicy(cfg: Config, emails: string[]) {
   console.log(green(`Access policy now allows: ${emails.join(", ")}`));
 }
 
+// ---------- decision hub ----------
+async function cmdDecisions(sub?: string, name?: string) {
+  const cfg = load();
+  const { openHub } = await import("./db/store.ts");
+  const file = path.resolve(expandHome((cfg.decisions as { db?: string } | undefined)?.db ?? path.join(path.dirname(CONFIG), "decisions.db")));
+  const hub = openHub(file);
+  const folders = cfg.roots.map((r) => r.name);
+  if (!sub) {
+    const toks = new Map(hub.projectsWithTokens().map((p) => [p.name, p.hasToken]));
+    const counts = hub.counts(folders);
+    console.log(dim(file));
+    for (const f of folders) {
+      const c = counts[f] ?? {};
+      const n = Object.values(c).reduce((a, b) => a + b, 0);
+      console.log(`${f.padEnd(24)} ${toks.get(f) ? green("token") : dim("no token")}  ${n ? `${c.open ?? 0} open, ${(c.answered ?? 0) + (c.relayed ?? 0)} answered, ${n} in all` : dim("no decisions")}`);
+    }
+    return;
+  }
+  if (!name || !folders.includes(name)) die(`no folder named ${name ?? "(none)"} (artipeek folders)`);
+  if (sub === "token") {
+    const tok = hub.newToken(name);
+    console.log(`Agent token for ${bold(name)} (shown once; the old one, if any, stops working now):\n\n  ${tok}\n`);
+    console.log(dim(`On the agent's machine, put it in ~/.config/artipeek/decide.json:\n  { "url": "http://<this machine>:${cfg.port ?? 4321}", "tokens": { "${name}": "<token>" } }\nor set ARTIPEEK_TOKEN. Keep it out of git.`));
+    return;
+  }
+  if (sub === "revoke") { hub.revokeToken(name); return console.log(green(`token for ${name} revoked`)); }
+  die(`unknown: decisions ${sub} (token | revoke)`);
+}
+
 // ---------- commands ----------
 const usage = `${bold("artipeek")}: manage the artipeek file preview
 
@@ -122,6 +151,11 @@ ${bold("Tailnet devices")} (restarts the service)
   devices                      list allowed device names
   devices add <name>           e.g. my-ipad
   devices remove <name>
+
+${bold("Decision hub")} (/decisions; agents write with a project token, see docs/decisions-for-agents.md)
+  decisions                    open / answered counts per project, and which have a token
+  decisions token <name>       new agent token for a folder (printed once; replaces the old one)
+  decisions revoke <name>      the folder's token stops working
 
 ${bold("Service")}
   restart | stop | start
@@ -324,6 +358,7 @@ async function main(argv: string[]) {
     case "emails": return cmdEmails(a[0], a[1]);
     case "devices": return cmdDevices(a[0], a[1]);
     case "check": return cmdCheck();
+    case "decisions": case "decision": return cmdDecisions(a[0], a[1]);
     case "restart": return restart("asked");
     case "stop": case "start": { const r = sh(["systemctl", "--user", cmd, SERVICE], { inherit: true }); process.exitCode = r.code; return; }
     case "logs": {

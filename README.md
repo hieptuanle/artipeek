@@ -135,6 +135,45 @@ also gets an `artipeek:pick` event (`detail`: `id`, `question`, `value`, empty w
 127.0.0.1**, because every local process can reach it, agents included. Folders without `answers` get 404, and
 their pages don't get the button script.
 
+## Decision hub
+
+One place for every folder's decisions that agents want from you, in one database (SQLite, via Drizzle ORM):
+**`/decisions`** (every folder, with a project filter and a project tag on each card) and
+**`/r/<folder>/decisions`** (one folder). The home page shows how many are open and urgent.
+
+- **Same shape everywhere**: agents send data (title, Markdown context, choices, deadline, links), not HTML.
+  Answer buttons work the same as on any page here: artipeek's own sheet confirms, only you can send.
+- **Order**: oldest first, the order they were raised in. Filters at the top: Open / Later / Answered / Closed / All,
+  **Urgent**, and the project (on `/decisions`).
+- **Urgent**: the agent's flag, or a deadline less than 24 h away (or past), while open. Urgent cards and their
+  outline rows are highlighted.
+- **Outline** on the right (on a phone: the floating Outline button): one row per decision; a tap scrolls there.
+  The row of the card you're reading is highlighted.
+- **Links between decisions**: "From D12" (came out of it), "Depends on D13" (waits for it), and back the other
+  way ("Led to", "Needed by"), also across folders. A tap scrolls there, or shows it on top if it isn't in the list.
+- **Explain this**: instead of answering, ask the desk for a page that illustrates the decision and its options.
+  It reaches the agent like an answer (`kind: "explain"`, text `EXPLAIN: …`). The decision stays open. When the
+  agent links the page, **Open explainer** shows it over the list.
+- **No reloads, no jumps**: changes come over a live stream and patch only the card that changed. What you are
+  reading stays exactly where it is: new decisions, longer updates above, a changed title. A card that leaves the
+  filter (you just answered it) stays, dimmed, until you change the filter. Typed notes, picks and focus survive.
+  So does a reload: the page comes back to the same card.
+
+**For agents**: [docs/decisions-for-agents.md](docs/decisions-for-agents.md). In short:
+`artipeek decisions token <folder>` here, then `artipeek-decide add --file d.json` (or the JSON API with that
+token) on the agent's machine. Tokens work on 127.0.0.1 and the tailnet, never on the public listener, and they
+can't answer.
+
+Answers are saved in the hub and, in folders with `answers` set, also as before: a line in the answers file, a
+commit, the `after` command. So the agents' watchers don't change.
+
+Moving a desk's existing `decisions.md` (the `## D15 — title` + `- Key: value` format) into the hub:
+`bun scripts/import-decisions.ts <folder> path/to/decisions.md --dry-run`, then without `--dry-run`. Open ones come
+in fully, answered ones from the last 30 days (`--days`). Raise times come from git.
+
+The database is `decisions.db` next to the config (or `"decisions": { "db": "…" }`). Schema: `db/schema.ts`;
+after changing it, `bunx drizzle-kit generate` (the server applies `drizzle/` at start).
+
 ## Admin CLI: `artipeek`
 
 Run `artipeek help` for the full list.
@@ -148,6 +187,8 @@ artipeek public add|remove NAME   # show / hide a folder on the public hostname
 artipeek emails add|remove EMAIL  # who may log in: updates the Access policy, then artipeek's own list
 artipeek devices add|remove NAME  # tailnet devices
 artipeek refused --since 24h      # refused requests, grouped by reason
+artipeek decisions                # decision hub: counts per folder, which have an agent token
+artipeek decisions token NAME     # new agent token for a folder (printed once)
 artipeek logs -f | restart | test | undo-config
 ```
 
@@ -166,6 +207,8 @@ artipeek logs -f | restart | test | undo-config
   plain 127.0.0.1), `Sec-Fetch-Site: same-origin` (set by the browser, not by pages), an `X-Artipeek: answer` header and a
   JSON body under 8 KB (so a cross-site request needs a CORS preflight, which gets 405). It appends one line to one
   file inside the folder (no symlinks out) and commits only that file. The answer text is never logged.
+  The decision hub's agent API (`/api/…`) also writes: it needs the folder's token (stored hashed) on every call, even
+  from 127.0.0.1, is not on the public listener, and can't answer. Agent text is Markdown without raw HTML.
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
 - **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network). `.html` gets `allow-scripts` with inline scripts only when the browser loads it in artipeek's own file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`); that page's `frame-src 'self'` keeps the frame from navigating away. Never `allow-same-origin`.
@@ -224,6 +267,12 @@ Answer buttons are tested in a real browser with `bun run test:answers` (same Ch
 only opens the sheet, Cancel saves nothing, Send saves one line and commits it, the page hears back, choice + note
 and free text, empty answers. `test.sh` covers the endpoint: login, device and same-origin checks, bad input,
 size limits, folders without answers, nothing logged.
+
+The decision hub is tested in a real browser with `bun run test:decisions`: the token API (other folder's token,
+no token, public listener, bad links all refused; an agent on 127.0.0.1 can't answer), order, urgency, outline,
+links between decisions, filters, live updates that keep what you read in place (laptop and phone), typed notes and
+picks through a live change, answers and multi-question picks through the sheet (line + commit + hub), explainer
+requests and the explainer viewer, the all-folders page, an outside write showing up live, the old link redirect.
 
 App tabs are tested in a real browser with `bun run test:tabs` (needs Chromium; set `CHROME_PATH` if it isn't at `/usr/bin/chromium`): links open and switch tabs, the file list highlight follows, switching back makes no request and keeps the scroll, HTML frames aren't reloaded, links inside HTML pages, Back, live update of a hidden tab, closing, reload, a second folder, a separate list per browser tab, phone width.
 

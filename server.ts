@@ -3,8 +3,10 @@
 // - Folders ("roots") come from a JSON config file, re-read when it changes.
 // - Only files git would list (tracked + untracked-not-ignored) are listed or served, minus a hard
 //   deny list (env files, keys). Every path resolves inside its root (symlinks too).
-// - GET/HEAD only, except answer buttons (see "answers"): a folder with `answers` set takes POST
-//   /r/<folder>/answer from artipeek's own page, after a click on Send, and appends it to one file.
+// - GET/HEAD only, except answer buttons (see "answers"): a folder with `answers` set (or decisions in the hub) takes
+//   POST /r/<folder>/answer from artipeek's own page, after a click on Send, and appends it to one file.
+// - Decision hub (decisions/web.ts, db/): /decisions pages, and /api/ for agents with a per-folder token (not on the
+//   public listener). Agents write decisions; only the person answers them.
 // - Listens on 127.0.0.1 and, if enabled, on this machine's Tailscale IP, where every
 //   request is checked with `tailscale whois` against an allow-list of devices.
 // - Optional public listener (config "public") for Cloudflare Tunnel: every request needs a valid
@@ -24,6 +26,8 @@ import footnote from "markdown-it-footnote";
 import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js";
 import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
+import { openHub } from "./db/store.ts";
+import { createDecisionsWeb, DECISIONS_CSS } from "./decisions/web.ts";
 
 // ---------- args + config ----------
 function arg(name: string, def?: string): string | undefined {
@@ -51,6 +55,8 @@ type Config = {
     roots: string[]; // only these folders exist on this listener
     certsUrl?: string; // tests only: default https://<teamDomain>/cdn-cgi/access/certs
   };
+  // Decision hub (SQLite). Default file: decisions.db next to the config. Read at start.
+  decisions?: { db?: string };
 };
 // Answer buttons: a page in this folder may ask the viewer to send a short answer. artipeek shows its own
 // sheet with the exact text; only a click on Send there saves it, as one JSON line in `file` (inside the
@@ -62,6 +68,8 @@ function readConfig(): Config {
   return c;
 }
 const config0 = readConfig();
+const DECISIONS_DB = path.resolve(expandHome(config0.decisions?.db ?? path.join(path.dirname(CONFIG_PATH), "decisions.db")));
+const hub = openHub(DECISIONS_DB);
 const PORT = Number(arg("port") ?? config0.port ?? 4321);
 const HOST = "127.0.0.1";
 const MAX_HIGHLIGHT = 1_000_000; // bytes: above this, plain text
@@ -486,7 +494,9 @@ loadRoots();
   let t: ReturnType<typeof setTimeout> | null = null;
   try {
     // Any event in the folder (a rename into place reports the temp name), debounced.
-    watch(path.dirname(CONFIG_PATH), () => {
+    const dbName = path.dirname(DECISIONS_DB) === path.dirname(CONFIG_PATH) ? path.basename(DECISIONS_DB) : "\0";
+    watch(path.dirname(CONFIG_PATH), (_ev, f) => {
+      if (f && String(f).startsWith(dbName)) return; // the decision hub's own writes (db, -wal, -shm)
       if (t) clearTimeout(t);
       t = setTimeout(() => { t = null; if (existsSync(CONFIG_PATH)) loadRoots(); }, 300);
     });
@@ -1256,6 +1266,9 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 .rootcard ul { list-style:none; margin:0; padding:0; font-size:14px; }
 .rootcard li a { display:flex; align-items:center; gap:8px; padding:5px 0; text-decoration:none; color:var(--fg); border-top:1px solid var(--line); }
 .rootcard li a .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+.deccard { border-color:var(--accent); }
+.deccard .name { direction:ltr !important; }
+.hot { color:#cf222e; }
 /* highlight.js: GitHub-like light/dark */
 .hljs-comment,.hljs-quote{color:#6e7781}.hljs-keyword,.hljs-selector-tag,.hljs-type{color:#cf222e}.hljs-string,.hljs-regexp,.hljs-addition{color:#0a3069}.hljs-number,.hljs-literal,.hljs-built_in,.hljs-attr,.hljs-variable,.hljs-template-variable{color:#0550ae}.hljs-title,.hljs-section,.hljs-name{color:#8250df}.hljs-deletion{color:#82071e}.hljs-meta{color:#953800}
 @media (prefers-color-scheme: dark){.hljs-comment,.hljs-quote{color:#8b949e}.hljs-keyword,.hljs-selector-tag,.hljs-type{color:#ff7b72}.hljs-string,.hljs-regexp,.hljs-addition{color:#a5d6ff}.hljs-number,.hljs-literal,.hljs-built_in,.hljs-attr,.hljs-variable,.hljs-template-variable{color:#79c0ff}.hljs-title,.hljs-section,.hljs-name{color:#d2a8ff}.hljs-deletion{color:#ffa198}.hljs-meta{color:#ffa657}}
@@ -1272,6 +1285,7 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 .answersheet button.asend { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
 .answersheet button:disabled { opacity:.6; cursor:default; }
 @media (max-width: 760px) { .answersheet { align-items:flex-end; } }
+${DECISIONS_CSS}
 /* phone: the sidebar becomes a drawer */
 @media (max-width: 760px) {
   body.app { display:block; }
@@ -1296,7 +1310,7 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 }
 `;
 
-function shell(opts: { title: string; bodyClass: string; data?: Record<string, string>; aside?: string; main: string; nonce: string }) {
+function shell(opts: { title: string; bodyClass: string; data?: Record<string, string>; aside?: string; main: string; nonce: string; extraJs?: string }) {
   const data = Object.entries(opts.data ?? {}).map(([k, v]) => ` data-${k}="${esc(v)}"`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
@@ -1304,7 +1318,7 @@ function shell(opts: { title: string; bodyClass: string; data?: Record<string, s
 <meta name="apple-mobile-web-app-title" content="artipeek">
 <title>${esc(opts.title)} · artipeek</title><link rel="stylesheet" href="/_/style.css"></head>
 <body class="${opts.bodyClass}"${data}>${opts.aside ?? ""}<div id="scrim"></div><main id="main">${opts.main}</main>
-<script nonce="${opts.nonce}">${CLIENT_JS}</script></body></html>`;
+<script nonce="${opts.nonce}">${CLIENT_JS}</script>${opts.extraJs ? `<script nonce="${opts.nonce}">${opts.extraJs}</script>` : ""}</body></html>`;
 }
 
 function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope): string {
@@ -1314,11 +1328,15 @@ function filePage(root: Root, current: string, mainHtml: string, nonce: string, 
 }
 
 function homePage(nonce: string, scope: Scope): string {
+  const dc = dec.counts(scope, null);
+  const withDec = Object.entries(dc).filter(([, c]) => c.all > 0);
+  const open = withDec.reduce((n, [, c]) => n + c.open, 0), urgent = withDec.reduce((n, [, c]) => n + c.urgent, 0);
+  const decCard = withDec.length ? `<section class="rootcard deccard"><h2><a href="/decisions">Decisions</a><span class="count">${open} open${urgent ? ` · <b class="hot">${urgent} urgent</b>` : ""}</span></h2><ul>${withDec.map(([p, c]) => `<li><a href="/r/${esc(encodeURIComponent(p))}/decisions"><span class="name">${esc(p)}</span><span class="age">${c.open} open${c.urgent ? `, <b class="hot">${c.urgent} urgent</b>` : ""}</span></a></li>`).join("")}</ul></section>` : "";
   const cards = visibleRoots(scope).map((r) => {
     const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}">${iconFor(e.rel, extOf(e.rel))}<span class="name">${esc(e.rel)}</span>${statusBadge(r.rowStatus(e.rel), e.rel)}${ageTag(e.mtime)}</a></li>`).join("");
     return `<section class="rootcard"><h2><a href="${r.base}/">${esc(r.name)}</a><span class="count">${r.files.size} files</span></h2><ul>${rec}</ul></section>`;
   }).join("");
-  return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });
+  return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${decCard}${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });
 }
 
 // ---------- http ----------
@@ -1361,9 +1379,16 @@ const decode = (s: string): string | null => { try { return decodeURIComponent(s
 // Who is asking: a Cloudflare Access login (public listener), a tailnet device, or null (127.0.0.1).
 type Who = { email: string } | { device: string } | null;
 
+const dec = createDecisionsWeb({ hub, visibleRoots, shell });
+// Who may send answers from a page: a Cloudflare Access login, or a device in answerDevices. Never plain 127.0.0.1.
+const answerBy = (who: Who) => who && "email" in who ? who.email : who && "device" in who && ANSWER_DEVICES.has(who.device.split(".")[0]) ? who.device : "";
+
 async function handle(req: Request, scope: Scope = null, who: Who = null): Promise<Response> {
+  const p0 = new URL(req.url).pathname;
+  // Agents' decision API: a project token on every call; never on the public listener (see decisions/web.ts).
+  if (p0.startsWith("/api/")) return dec.api(req, p0, scope);
   if (req.method === "POST") {
-    const am = /^\/r\/([^/]+)\/answer$/.exec(new URL(req.url).pathname);
+    const am = /^\/r\/([^/]+)\/answer$/.exec(p0);
     if (am) return answer(req, am[1], scope, who);
   }
   if (req.method !== "GET" && req.method !== "HEAD")
@@ -1377,6 +1402,10 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
   if (p === "/" || p === "") {
     const nonce = randomBytes(16).toString("base64");
     return new Response(homePage(nonce, scope), { headers: { ...HTML, "Content-Security-Policy": pageCsp(nonce) } });
+  }
+  if (p.startsWith("/decisions") || /^\/r\/[^/]+\/decisions\/?$/.test(p)) {
+    const r = dec.route(req, url, scope, () => randomBytes(16).toString("base64"), !!answerBy(who));
+    if (r) return r;
   }
 
   // /r/<root>/<action>/<path>
@@ -1409,6 +1438,10 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
 
   const am = /^\/(view|raw|part\/main|part\/status)\/(.+)$/.exec(rest);
   if (!am) return notFound();
+  // An old bookmark of the folder's own decisions page goes to the hub, once the folder has decisions there.
+  // ?file=1 still shows the file.
+  if (am[1] === "view" && am[2] === "decisions.html" && !url.searchParams.has("file") && Object.keys(hub.counts([root.name])).length)
+    return Response.redirect(`${root.base}/decisions`, 302);
   const rel = decode(am[2]);
   const f = rel ? root.resolve(rel) : null;
   if (!f) return notFound();
@@ -1454,10 +1487,11 @@ async function answer(req: Request, rawName: string, scope: Scope, who: Who): Pr
   const name = decode(rawName);
   const root = name && (!scope || scope.has(name)) ? roots.get(name) : undefined;
   const cfg = root && answersFor.get(root.name);
-  if (!root || !cfg) return notFound();
+  // A folder takes answers if it has "answers" set, or decisions in the hub (checked again per id below).
+  if (!root || (!cfg && !Object.keys(hub.counts([root.name])).length)) return notFound();
   // Never from plain 127.0.0.1: every local process (an agent, a script) can reach that port. A tailnet device must be
   // in answerDevices; the public listener has already checked the Access login.
-  const by = who && "email" in who ? who.email : who && "device" in who && ANSWER_DEVICES.has(who.device.split(".")[0]) ? who.device : "";
+  const by = answerBy(who);
   if (!by) return jsonRes(403, { ok: false, error: "answers need the public link (login) or a device in answerDevices" });
   // Only a same-origin fetch from artipeek's own page: the browser sets Sec-Fetch-Site (a page can't), and the custom
   // header + JSON type turn any cross-site request into a CORS preflight, which gets 405.
@@ -1469,19 +1503,36 @@ async function answer(req: Request, rawName: string, scope: Scope, who: Who): Pr
   let b: any;
   try { b = JSON.parse(raw); } catch { return jsonRes(400, { ok: false, error: "bad JSON" }); }
   const id = typeof b?.id === "string" ? b.id : "";
-  const text = typeof b?.text === "string" ? b.text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim() : "";
+  let text = typeof b?.text === "string" ? b.text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim() : "";
   if (!ANSWER_ID_RE.test(id) || !text || text.length > 2000) return jsonRes(400, { ok: false, error: "bad id or text" });
-  const page = typeof b?.page === "string" && b.page.length <= 400 ? root.resolve(b.page)?.rel ?? "" : "";
-  const rec = { at: new Date().toISOString(), uid: randomBytes(6).toString("hex"), id, text, by, page };
-  const job = (answerQueue.get(root.name) ?? Promise.resolve()).then(() => saveAnswer(root, cfg, rec));
+  const inHub = hub.has(root.name, id);
+  if (!cfg && !inHub) return jsonRes(404, { ok: false, error: `${id} is not a decision of ${root.name}` });
+  // "Explain this": asks the desk for an explainer page. Its text always starts with EXPLAIN:, so a desk that reads
+  // only the text still can't take it for a choice.
+  const kind = b?.kind === "explain" ? "explain" : "answer";
+  if (kind === "explain" && !inHub) return jsonRes(400, { ok: false, error: "explainer requests are for decisions in the hub" });
+  if (kind === "explain" && !/^EXPLAIN:/.test(text)) text = `EXPLAIN: ${text}`.slice(0, 2000);
+  const page = b?.page === "artipeek:decisions" ? "artipeek:decisions" : typeof b?.page === "string" && b.page.length <= 400 ? root.resolve(b.page)?.rel ?? "" : "";
+  const rec: Record<string, string> = { at: new Date().toISOString(), uid: randomBytes(6).toString("hex"), id, text, by, page, ...(kind === "explain" ? { kind } : {}) };
+  if (inHub) {
+    try { hub.recordAnswer({ uid: rec.uid, project: root.name, decisionId: id, at: rec.at, by, kind, text, page }); }
+    catch (e) { console.log(`artipeek: answer ${id} for ${root.name} not saved in the hub: ${(e as Error).message}`); return jsonRes(500, { ok: false, error: "not saved" }); }
+    if (!cfg) {
+      console.log(`artipeek: ${kind} ${id} saved in the hub for ${root.name} by ${by}`);
+      return jsonRes(200, { ok: true, at: rec.at, uid: rec.uid, committed: false, hub: true });
+    }
+  }
+  const job = (answerQueue.get(root.name) ?? Promise.resolve()).then(() => saveAnswer(root, cfg!, rec));
   answerQueue.set(root.name, job.catch(() => {}));
   try {
     const committed = await job;
-    console.log(`artipeek: answer ${id} saved in ${root.name} by ${by}${committed ? ", committed" : ", not committed"}`);
-    return jsonRes(200, { ok: true, at: rec.at, uid: rec.uid, committed });
+    // Keep this line's exact shape: desks' watchers match it in the journal ("answer <id> saved in <folder> by <who>, …").
+    console.log(`artipeek: ${kind} ${id} saved in ${root.name} by ${by}${committed ? ", committed" : ", not committed"}`);
+    if (inHub) console.log(`artipeek: ${kind} ${id} also in the decision hub (${root.name})`);
+    return jsonRes(200, { ok: true, at: rec.at, uid: rec.uid, committed, hub: inHub });
   } catch (e) {
     console.log(`artipeek: answer ${id} for ${root.name} not saved: ${(e as Error).message}`);
-    return jsonRes(500, { ok: false, error: "not saved" });
+    return jsonRes(500, { ok: false, error: inHub ? "saved on the decisions page, but not in the folder's answers file (the desk may not see it)" : "not saved" });
   }
 }
 

@@ -1,0 +1,128 @@
+# artipeek iOS: build, install on a phone, TestFlight. Run from ios/: `fastlane beta`, `fastlane device`, `fastlane test`.
+# Private values: Config/Local.xcconfig (team, bundle id, server) and fastlane/.env (App Store Connect API key).
+require "shellwords"
+require_relative "xcconfig"
+
+default_platform(:ios)
+
+SCHEME = "Artipeek"
+PROJECT = "Artipeek.xcodeproj"
+TEAM_ID = artipeek_xcconfig("ARTIPEEK_TEAM_ID")
+BUNDLE_ID = artipeek_xcconfig("ARTIPEEK_BUNDLE_ID")
+
+platform :ios do
+  before_all do |lane|
+    if TEAM_ID.to_s.empty? || BUNDLE_ID.to_s.empty? || BUNDLE_ID == "com.example.artipeek"
+      UI.user_error!("Set ARTIPEEK_TEAM_ID and ARTIPEEK_BUNDLE_ID in Config/Local.xcconfig (copy Local.xcconfig.example)")
+    end
+  end
+
+  # XcodeGen owns the .xcodeproj (untracked). Regenerate before every build; a build number set on the project must
+  # come after this, because regenerating rewrites it from project.yml.
+  private_lane :regenerate_project do
+    sh("cd .. && xcodegen generate")
+  end
+
+  # App Store Connect API key (no Apple ID or 2FA). nil when fastlane/.env doesn't set it.
+  private_lane :api_key do
+    next nil unless ENV["ASC_KEY_ID"] && ENV["ASC_ISSUER_ID"] && ENV["ASC_KEY_PATH"]
+    app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_filepath: key_path,
+      in_house: false
+    )
+  end
+
+  # ASC_KEY_PATH may be relative to ios/; __dir__ is ios/fastlane.
+  def key_path
+    File.expand_path(ENV.fetch("ASC_KEY_PATH"), File.expand_path("..", __dir__))
+  end
+
+  # The build number can't live in the regenerated project: latest TestFlight build + 1 (1 for the first upload).
+  private_lane :next_build_number do
+    (latest_testflight_build_number(app_identifier: BUNDLE_ID, initial_build_number: 0, api_key: api_key) + 1).to_s
+  end
+
+  # The App Store Connect app record must exist before the first upload. The API key can't create one (Apple only
+  # allows that with an Apple ID login), so this stops with the steps when it is missing.
+  desc "Register the App ID (bundle id) with Push Notifications in the developer portal, if missing"
+  lane :app_id do
+    api_key
+    id = Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
+    unless id
+      id = Spaceship::ConnectAPI::BundleId.create(name: "artipeek", platform: "IOS", identifier: BUNDLE_ID)
+      UI.success("App ID #{BUNDLE_ID} registered")
+    end
+    caps = id.get_capabilities.map(&:capability_type)
+    push = Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
+    unless caps.include?(push)
+      id.create_capability(push)
+      UI.success("Push Notifications enabled on #{BUNDLE_ID}")
+    end
+    UI.success("App ID #{BUNDLE_ID}: #{(caps | [push]).join(', ')}")
+  end
+
+  desc "Check that the App Store Connect app record exists (the first upload needs it)"
+  lane :app_record do
+    api_key
+    app = Spaceship::ConnectAPI::App.find(BUNDLE_ID)
+    unless app
+      UI.user_error!("No App Store Connect app for #{BUNDLE_ID} yet. Create it once at https://appstoreconnect.apple.com/apps → + → New App: " \
+                     "platform iOS, name artipeek (or any free name), bundle ID #{BUNDLE_ID}, SKU artipeek, full access. Then run fastlane beta again.")
+    end
+    UI.success("App Store Connect app: #{app.name} (#{app.id})")
+  end
+
+  # Archive + export an app-store .ipa. Automatic signing; profiles and the App ID (with Push Notifications) are made
+  # on demand by xcodebuild (-allowProvisioningUpdates). The distribution certificate is cloud-managed, so the export
+  # step must cloud-sign: it needs -allowProvisioningUpdates and the API key passed to the export xcodebuild (gym has
+  # no api_key option, so they ride in export_xcargs). Without them: "No signing certificate iOS Distribution found".
+  # Cloud signing needs an Admin key.
+  private_lane :build_appstore do
+    api_key
+    auth = [
+      "-allowProvisioningUpdates",
+      "-authenticationKeyID #{ENV.fetch('ASC_KEY_ID')}",
+      "-authenticationKeyIssuerID #{ENV.fetch('ASC_ISSUER_ID')}",
+      "-authenticationKeyPath #{key_path.shellescape}",
+    ].join(" ")
+    gym(
+      scheme: SCHEME,
+      project: PROJECT,
+      export_method: "app-store",
+      output_directory: "build",
+      xcargs: auth,
+      export_xcargs: auth,
+      export_options: { signingStyle: "automatic", teamID: TEAM_ID }
+    )
+  end
+
+  desc "Run the unit tests on a simulator"
+  lane :test do
+    regenerate_project
+    scan(scheme: SCHEME, project: PROJECT, output_directory: "fastlane/test_output")
+  end
+
+  desc "Install + launch a dev build on an iPhone over the network (devicectl). device_name:\"…\" or device_id:\"…\""
+  lane :device do |options|
+    env = []
+    env << "DEVICE_ID=#{options[:device_id].shellescape}" if options[:device_id]
+    env << "DEVICE_NAME=#{options[:device_name].shellescape}" if options[:device_name]
+    sh("cd .. && #{env.join(' ')} ./scripts/install-device.sh")
+  end
+
+  desc "Upload to TestFlight (internal testers). changelog:\"…\" sets What to Test (then it waits for processing)."
+  lane :beta do |options|
+    app_record
+    regenerate_project
+    increment_build_number(xcodeproj: PROJECT, build_number: next_build_number)
+    build_appstore
+    pilot(
+      api_key: api_key,
+      app_identifier: BUNDLE_ID,
+      changelog: options[:changelog],
+      skip_waiting_for_build_processing: options[:changelog].nil?
+    )
+  end
+end

@@ -1,0 +1,80 @@
+# XcodeGen: `xcodegen generate` makes Artipeek.xcodeproj (not tracked). Team, bundle id and server come from
+# Config/Local.xcconfig (see Config/App.xcconfig).
+name: Artipeek
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  Artipeek:
+    type: application
+    platform: iOS
+    sources:
+      - path: Artipeek
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: artipeek
+        CODE_SIGN_ENTITLEMENTS: Artipeek/Artipeek.entitlements
+    info:
+      path: Artipeek/Info.plist
+      properties:
+        CFBundleDisplayName: artipeek
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ArtipeekServerHost: $(ARTIPEEK_SERVER_HOST)
+        ITSAppUsesNonExemptEncryption: false
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSupportsIndirectInputEvents: true
+    entitlements:
+      path: Artipeek/Artipeek.entitlements
+      properties:
+        aps-environment: development
+  ArtipeekTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ArtipeekTests
+    dependencies:
+      - target: Artipeek
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ARTIPEEK_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Artipeek.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Artipeek
+        BUNDLE_LOADER: $(TEST_HOST)
+schemes:
+  Artipeek:
+    build:
+      targets:
+        Artipeek: all
+        ArtipeekTests: [test]
+    test:
+      targets:
+        - ArtipeekTests

@@ -1,0 +1,5 @@
+# Team and bundle id come from ../Config/Local.xcconfig (gitignored), the one place they live.
+require File.expand_path(File.exist?("fastlane/xcconfig.rb") ? "fastlane/xcconfig.rb" : "xcconfig.rb") # eval'd: no __dir__
+
+app_identifier(artipeek_xcconfig("ARTIPEEK_BUNDLE_ID"))
+team_id(artipeek_xcconfig("ARTIPEEK_TEAM_ID"))

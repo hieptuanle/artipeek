@@ -1,0 +1,12 @@
+// Build settings for the app. Your own values (team, bundle id, server) go in Local.xcconfig (gitignored);
+// copy Local.xcconfig.example to start.
+ARTIPEEK_TEAM_ID =
+ARTIPEEK_BUNDLE_ID = com.example.artipeek
+// host only (xcconfig reads "//" as a comment); empty = asked on first launch
+ARTIPEEK_SERVER_HOST =
+
+#include? "Local.xcconfig"
+
+DEVELOPMENT_TEAM = $(ARTIPEEK_TEAM_ID)
+PRODUCT_BUNDLE_IDENTIFIER = $(ARTIPEEK_BUNDLE_ID)
+CODE_SIGN_STYLE = Automatic

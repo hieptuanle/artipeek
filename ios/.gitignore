@@ -1,0 +1,13 @@
+# XcodeGen makes the project from project.yml
+*.xcodeproj/
+# private: team, bundle id, server (see Config/Local.xcconfig.example, fastlane/.env.example)
+Config/Local.xcconfig
+fastlane/.env
+fastlane/*.p8
+fastlane/report.xml
+fastlane/README.md
+fastlane/test_output/
+build/
+*.ipa
+*.dSYM.zip
+.build-number

@@ -10,6 +10,7 @@
     "test:tabs": "bun test-tabs.ts",
     "test:answers": "bun test-answers.ts",
     "test:decisions": "bun test-decisions.ts",
+    "test:push": "bun test-push.ts",
     "db:generate": "drizzle-kit generate",
     "postinstall": "sh scripts/install-hooks.sh"
   },

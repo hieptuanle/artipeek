@@ -28,6 +28,7 @@ import hljs from "highlight.js";
 import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
 import { openHub } from "./db/store.ts";
 import { createDecisionsWeb, DECISIONS_CSS, DECISIONS_JS } from "./decisions/web.ts";
+import { createPush, type PushConfig } from "./push/notify.ts";
 
 // ---------- args + config ----------
 function arg(name: string, def?: string): string | undefined {
@@ -57,6 +58,8 @@ type Config = {
   };
   // Decision hub (SQLite). Default file: decisions.db next to the config. Read at start.
   decisions?: { db?: string };
+  // Push to the iOS app (APNs). Read at start. See push/notify.ts.
+  push?: PushConfig;
 };
 // Answer buttons: a page in this folder may ask the viewer to send a short answer. artipeek shows its own
 // sheet with the exact text; only a click on Send there saves it, as one JSON line in `file` (inside the
@@ -1028,6 +1031,14 @@ const decode = (s: string): string | null => { try { return decodeURIComponent(s
 type Who = { email: string } | { device: string } | null;
 
 const dec = createDecisionsWeb({ hub, visibleRoots, broadcast: toAll });
+// A device registered through the public listener only hears about the public folders.
+const PUBLIC_ROOTS: Scope = new Set((config0.public?.roots ?? []).filter((n) => typeof n === "string"));
+const pushApns = config0.push?.apns;
+const push = createPush({
+  hub,
+  config: config0.push && { ...config0.push, apns: pushApns && { ...pushApns, ...(typeof pushApns.keyPath === "string" ? { keyPath: expandHome(pushApns.keyPath) } : {}) } },
+  projectsFor: (s) => visibleRoots(s === "public" ? PUBLIC_ROOTS : null).map((r) => r.name),
+});
 // Who may send answers from a page: a Cloudflare Access login, or a device in answerDevices. Never plain 127.0.0.1.
 const answerBy = (who: Who) => who && "email" in who ? who.email : who && "device" in who && ANSWER_DEVICES.has(who.device.split(".")[0]) ? who.device : "";
 
@@ -1038,6 +1049,8 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
   if (req.method === "POST") {
     const am = /^\/r\/([^/]+)\/answer$/.exec(p0);
     if (am) return answer(req, am[1], scope, who);
+    // the iOS app's push registration: the person only, like answers (see push/notify.ts)
+    if (p0.startsWith("/_/push/")) return push.http(req, p0, answerBy(who), who && "email" in who ? "public" : "all");
   }
   if (req.method !== "GET" && req.method !== "HEAD")
     return new Response("Read-only", { status: 405, headers: { ...SEC_HEADERS, Allow: "GET, HEAD" } });

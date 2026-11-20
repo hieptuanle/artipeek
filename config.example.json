@@ -8,6 +8,9 @@
     { "name": "my-project", "path": "~/projects/my-project" }
   ],
   "decisions": { "db": "~/.config/artipeek/decisions.db" },
+  "push": {
+    "apns": { "keyPath": "~/keys/AuthKey_XXXXXXXXXX.p8", "keyId": "XXXXXXXXXX", "teamId": "XXXXXXXXXX", "bundleId": "com.example.artipeek" }
+  },
   "public": {
     "port": 4323,
     "hostname": "artipeek.example.com",

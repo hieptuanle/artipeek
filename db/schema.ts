@@ -75,3 +75,26 @@ export const answers = sqliteTable("decision_answers", {
   text: text("text").notNull(),
   page: text("page").notNull().default(""),
 }, (t) => [index("answers_decision").on(t.project, t.decisionId, t.at)]);
+
+// Push (iOS app): the person's devices. Added only by the person (a login or an answer device), never by an agent.
+// scope: "public" = registered through the public listener, so it only hears about the public folders.
+export const pushDevices = sqliteTable("push_devices", {
+  token: text("token").primaryKey(), // APNs device token (hex)
+  environment: text("environment").$type<"sandbox" | "production">().notNull(),
+  bundle: text("bundle").notNull(),
+  name: text("name").notNull().default(""),
+  by: text("by").notNull(),
+  scope: text("scope").$type<"public" | "all">().notNull(),
+  createdAt: text("created_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+});
+
+// What the push notifier has handled, once per decision and kind ("new", "urgent"). sent = 0: seen but not pushed
+// (history, an import, a decision that was already old when first seen).
+export const pushSent = sqliteTable("push_sent", {
+  project: text("project").notNull(),
+  decisionId: text("decision_id").notNull(),
+  kind: text("kind").$type<"new" | "urgent">().notNull(),
+  at: text("at").notNull(),
+  sent: integer("sent").notNull().default(0), // devices it reached
+}, (t) => [primaryKey({ columns: [t.project, t.decisionId, t.kind] })]);

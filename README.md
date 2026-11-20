@@ -216,10 +216,11 @@ artipeek logs -f | restart | test | undo-config
   file inside the folder (no symlinks out) and commits only that file. The answer text is never logged.
   The decision hub's agent API (`/api/…`) also writes: it needs the folder's token (stored hashed) on every call, even
   from 127.0.0.1, is not on the public listener, and can't answer. Agent text is Markdown without raw HTML.
+  `POST /_/push/…` (the iOS app's device registration) follows the answer rules (see "iOS app and push").
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
 - **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network). `.html` gets `allow-scripts` with inline scripts only when the browser loads it in artipeek's own file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`); that page's `frame-src 'self'` keeps the frame from navigating away. Never `allow-same-origin`.
-- It never logs file contents and sends nothing anywhere (it only fetches the Cloudflare Access public keys when `public` is set).
+- It never logs file contents and sends nothing anywhere (it only fetches the Cloudflare Access public keys when `public` is set, and with `push` set, sends notifications to Apple's push service: folder, id and title of a decision).
 
 ## Public hostname (Cloudflare Tunnel + Access)
 
@@ -248,6 +249,41 @@ Setup outline (Cloudflare dashboard or API):
 3. Put the app's AUD tag and your team domain in `public`, then `artipeek restart` and `artipeek check`.
 
 Undo: delete the Access app, the DNS record and the tunnel rule; revoke the API token; remove `public` from the config and restart.
+
+## iOS app and push (optional)
+
+`ios/` holds a small iOS app: a native SwiftUI shell around artipeek's own web UI (a `WKWebView`), so every web
+feature is in the app without an app update. Native parts: push notifications, the badge, the login (the Cloudflare
+Access page inside the app's web view), and settings (server URL, notifications on/off, a test push, sign out).
+Build and TestFlight steps: [`ios/README.md`](ios/README.md).
+
+The server pushes through APNs (token auth, a `.p8` key from your Apple developer team) when a decision is:
+
+- **new**: raised and open. Title `<folder> · <id> · new`, body the decision's title.
+- **urgent**: open and the agent sets `urgent: true`, or its deadline comes within 24 h (or passes). Title
+  `<folder> · <id> · urgent`. A decision raised already urgent gets one push, the urgent one.
+
+Each decision gets at most one push of each kind (recorded in the hub's `push_sent` table, so a restart or a re-import
+never pushes again). History never pushes: a decision first seen after it was raised and last changed more than 15
+minutes ago (an import, a decision from before push was set up) is marked seen without a push. The server checks after
+every change, when another process writes the database, and once a minute for deadlines. The badge is the number of
+open decisions the device can see; `thread-id` is the folder; custom data `{project, id, url}` opens the decision.
+
+```json
+"push": {
+  "apns": { "keyPath": "~/keys/AuthKey_XXXXXXXXXX.p8", "keyId": "XXXXXXXXXX", "teamId": "XXXXXXXXXX", "bundleId": "com.example.artipeek" }
+}
+```
+
+- Read at start (`artipeek restart` after a change). Keep the key file private (`chmod 600`); it is never copied or
+  logged. One APNs key works for every app of the team.
+- Devices register with `POST /_/push/register` (`/unregister`, `/test`), which follow the answer rules: an Access login
+  or a device in `answerDevices` (never plain 127.0.0.1, never an agent token), `Sec-Fetch-Site: same-origin`, an
+  `X-Artipeek: push` header and a JSON body. The app sends them from its web view, so they carry the page's login.
+- A device registered through the public listener only hears about `public.roots`, and its badge counts only those.
+- Each token keeps its APNs environment (a development build: sandbox; TestFlight: production). A token APNs calls
+  gone (410, `BadDeviceToken`) is dropped; the app registers again when it next opens.
+- `origin` (in `apns`) exists only for the tests (a fake APNs). Do not set it in a real config.
 
 ## Service
 
@@ -284,6 +320,11 @@ picks through a live change, answers and multi-question picks through the sheet 
 requests and the explainer viewer, the all-folders page, an outside write showing up live, the old link redirect.
 
 App tabs are tested in a real browser with `bun run test:tabs` (needs Chromium; set `CHROME_PATH` if it isn't at `/usr/bin/chromium`): links open and switch tabs, the file list highlight follows, switching back makes no request and keeps the scroll, HTML frames aren't reloaded, links inside HTML pages, Back, live update of a hidden tab, closing, reload, every folder in the file list (loaded when opened), a file of a second folder, the one Decisions tab, a separate list per browser tab, phone width.
+
+Push is tested with `bun run test:push` against a fake APNs (a local http2 server that checks the ES256 token): who
+may register (127.0.0.1, an agent token, no login, a cross-site request → refused; an Access login → ok), new and urgent
+each push once, history and an outside import push nothing, nothing again after a restart, folders that aren't public
+stay quiet for a public device, dead tokens are dropped, the payload (title, body, badge, thread-id, data), the test push.
 
 The public listener is tested with a local fake certs endpoint and locally made RSA keys (`test-access.ts`): no token, bad signature, wrong aud/iss, expired, wrong email, `alg: none` → 403; valid header or cookie → 200; folders not in `public.roots` → 404 and not listed; path escapes → 404; key rotation; SSE with a token. This part waits ~30 s on purpose (key refetch limit). The admin CLI is tested on a temp config. If Tailscale is up, they also check the device rules: allowed device 200, other device 403, wrong tailnet 403, localhost 200.
 

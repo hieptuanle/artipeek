@@ -257,6 +257,16 @@ feature is in the app without an app update. Native parts: push notifications, t
 Access page inside the app's web view), and settings (server URL, notifications on/off, a test push, sign out).
 Build and TestFlight steps: [`ios/README.md`](ios/README.md).
 
+<p>
+  <img src="docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline">
+  <img src="docs/screenshots/ios-push.png" width="200" alt="A push banner: my-project · D12 · urgent, with the decision's title">
+  <img src="docs/screenshots/ios-settings.png" width="200" alt="The app's settings: server, notifications on, send a test push, sign out">
+</p>
+
+<img src="docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with the app's settings gear in its header">
+
+<sub>Screenshots use made-up demo folders.</sub>
+
 The server pushes through APNs (token auth, a `.p8` key from your Apple developer team) when a decision is:
 
 - **new**: raised and open. Title `<folder> · <id> · new`, body the decision's title.

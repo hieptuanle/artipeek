@@ -92,7 +92,8 @@ platform :ios do
       project: PROJECT,
       export_method: "app-store",
       output_directory: "build",
-      xcargs: auth,
+      # gym repeats xcargs on the export step, and xcodebuild takes each -authenticationKey* flag only once
+      xcargs: "-allowProvisioningUpdates",
       export_xcargs: auth,
       export_options: { signingStyle: "automatic", teamID: TEAM_ID }
     )
@@ -112,6 +113,44 @@ platform :ios do
     sh("cd .. && #{env.join(' ')} ./scripts/install-device.sh")
   end
 
+  desc "Make sure the internal TestFlight group exists (every build) with the testers in TESTFLIGHT_TESTERS (fastlane/.env)"
+  lane :testers do
+    api_key
+    app = Spaceship::ConnectAPI::App.find(BUNDLE_ID) or UI.user_error!("no App Store Connect app for #{BUNDLE_ID}")
+    group = app.get_beta_groups.find { |g| g.is_internal_group }
+    unless group
+      # app.create_beta_group also sends public-link fields, which Apple refuses for an internal group
+      Spaceship::ConnectAPI.test_flight_request_client.post("v1/betaGroups", { data: {
+        type: "betaGroups",
+        attributes: { name: "Internal", isInternalGroup: true, hasAccessToAllBuilds: true },
+        relationships: { app: { data: { type: "apps", id: app.id } } },
+      } })
+      group = app.get_beta_groups.find { |g| g.is_internal_group } or UI.user_error!("could not create the internal group")
+      UI.success("Created TestFlight group #{group.name}")
+    end
+    emails = ENV.fetch("TESTFLIGHT_TESTERS", "").split(",").map(&:strip).reject(&:empty?)
+    have = Spaceship::ConnectAPI::BetaTester.all(filter: { betaGroups: group.id }).map { |t| t.email.to_s.downcase }
+    missing = emails.map(&:downcase) - have
+    unless missing.empty?
+      tf = Spaceship::ConnectAPI.test_flight_request_client
+      missing.each do |email|
+        t = Spaceship::ConnectAPI::BetaTester.find(email: email)
+        if t # a tester of the team already (another app): add them to this group
+          tf.post("v1/betaGroups/#{group.id}/relationships/betaTesters", { data: [{ type: "betaTesters", id: t.id }] })
+        else
+          tf.post("v1/betaTesters", { data: { type: "betaTesters", attributes: { email: email },
+            relationships: { betaGroups: { data: [{ type: "betaGroups", id: group.id }] } } } })
+        end
+        UI.success("Added #{email} to #{group.name}")
+      rescue Spaceship::UnexpectedResponse => e
+        # e.g. "Tester(s) cannot be assigned": the person is already an external (email) tester of another app
+        UI.important("Could not add #{email} through the API (#{e.message.lines.first.strip}). Add them once by hand: " \
+                     "App Store Connect → Apps → #{app.name} → TestFlight → #{group.name} → Testers → +.")
+      end
+    end
+    UI.success("TestFlight group #{group.name}: #{Spaceship::ConnectAPI::BetaTester.all(filter: { betaGroups: group.id }).size} tester(s)")
+  end
+
   desc "Upload to TestFlight (internal testers). changelog:\"…\" sets What to Test (then it waits for processing)."
   lane :beta do |options|
     app_record
@@ -124,5 +163,6 @@ platform :ios do
       changelog: options[:changelog],
       skip_waiting_for_build_processing: options[:changelog].nil?
     )
+    testers if ENV["TESTFLIGHT_TESTERS"]
   end
 end

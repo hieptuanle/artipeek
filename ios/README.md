@@ -40,6 +40,7 @@ The app icon is artipeek's `assets/icon.svg`: `scripts/make-icon.sh` renders it.
 | `fastlane beta` | TestFlight: checks the App Store Connect app exists, regenerates the project, build number = latest TestFlight build + 1, archives and exports with automatic cloud signing, uploads. `changelog:"…"` sets What to Test (and waits for processing). |
 | `fastlane device` | Development build installed and started on an iPhone over the network (`xcrun devicectl`; `device_name:"…"` or `device_id:"…"`). It registers as a `sandbox` push token. |
 | `fastlane test` | Unit tests on a simulator. |
+| `fastlane testers` | Makes sure the app's internal TestFlight group exists (every build) and adds `TESTFLIGHT_TESTERS` from `fastlane/.env`. Apple refuses the API for someone who is already an email-invited tester of another app: then add them once in App Store Connect (TestFlight → Internal → Testers → +). `beta` runs it when the variable is set. |
 | `fastlane app_id` | Registers the bundle id with Push Notifications in the developer portal, if missing. |
 | `fastlane app_record` | Checks the App Store Connect app record. Apple lets only an Apple ID login create it (App Store Connect → Apps → + → New App, with the bundle id); the API key can't. |
 

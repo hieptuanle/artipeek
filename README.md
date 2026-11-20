@@ -27,12 +27,13 @@ Tip: on the phone, add the page to the home screen.
 
 - **Home (`/`)**: one card per folder with its 5 newest files.
 - **File page (`/r/<folder>/view/<path>`)**: the file, rendered on the server. On a phone, tap ☰ for the file list (it slides in). On a laptop, the list sits on the left.
-- **Tabs**: a click on a link to a file here (in the file list, in a Markdown file, in an HTML page) opens it in a new tab inside the page and switches to it. If that file is already open, it switches to that tab. The file list highlights the file of the active tab.
+- **Tabs**: a click on a link to a file here (in the file list, in a Markdown file, in an HTML page, on the Decisions tab) opens it in a new tab inside the page and switches to it. If that file is already open, it switches to that tab. The file list highlights the file of the active tab. **Decisions** (see "Decision hub") is a tab too, at most one.
   - Old tabs stay in the page, with their scroll position, so switching back is instant. They still update live while hidden.
   - The tab list belongs to one browser tab (`sessionStorage`): a second browser tab has its own list, and a reload keeps it.
-  - One list holds files from all folders: picking a tab from another folder moves the file list there. Back and Forward walk through the tabs you viewed.
+  - One list holds files from all folders. Back and Forward walk through the tabs you viewed.
   - Close a tab with × or a middle click. Ctrl/Cmd-click still opens a real browser tab. The tab bar shows from two tabs up.
-- File list: switch folders (name at the top, ▾), sort by **Name** or **Modified** (newest first; a folder counts as new as its newest file), filter box, "Recent" (10 newest files). The sort choice is kept in a cookie.
+- File list: **Decisions** (open and urgent counts) at the top, then "Recent" (the 10 newest files of every folder, with the folder's name), then every folder. A folder opens to its files and folders (loaded when you open it; the folder of the active tab is open, and the ones you opened stay open). Sort by **Name** or **Modified** (newest first; a folder counts as new as its newest file), filter box (searches every folder). The sort choice is kept in a cookie.
+- One live stream per browser tab (`/_/events`) for every folder and the decisions, so several browser tabs stay under the browser's limit of connections.
 - `.md`: GitHub-style (tables, task lists, code highlight, footnotes, heading anchors), front matter as a small table, relative links and images, Obsidian `[[name]]` links.
 - `.html` (e.g. email drafts, explainers): shown as the page itself, in a sandboxed box. When the file changes and the
   page reloads, it keeps its scroll position (and, in folders with answers, what you typed in its text boxes): the
@@ -137,29 +138,33 @@ their pages don't get the button script.
 
 ## Decision hub
 
-One place for every folder's decisions that agents want from you, in one database (SQLite, via Drizzle ORM):
-**`/decisions`** (every folder, with a project filter and a project tag on each card) and
-**`/r/<folder>/decisions`** (one folder). The home page shows how many are open and urgent.
+One place for every folder's decisions that agents want from you, in one database (SQLite, via Drizzle ORM). It is
+a tab of the app: **Decisions** at the top of the file list, or **`/decisions`** (every folder, with a project
+filter and a project tag on each card; a tag also filters) and **`/r/<folder>/decisions`** (the same tab, filtered to
+one folder). Links on it (files, explainers) open as artipeek tabs next to it. The home page shows how many are
+open and urgent.
 
 - **Old links**: once a folder has decisions in the hub, a link to its `decisions.html` (at any depth) opens the hub
   page instead (`?file=1` still shows the file).
 - **Same shape everywhere**: agents send data (title, Markdown context, choices, deadline, links), not HTML.
   Answer buttons work the same as on any page here: artipeek's own sheet confirms, only you can send.
-- **Order**: oldest first, the order they were raised in. Filters at the top: Open / Later / Answered / Closed / All,
-  **Urgent**, and the project (on `/decisions`).
+- **Order**: Open and Later read as a queue, oldest first; Answered, Closed and All as history, newest first.
+  Filters at the top: Open / Later / Answered / Closed / All, **Urgent**, and the project.
+- **A page at a time**: 30 decisions; the next 30 load when you reach the end (or tap "Show more").
 - **Urgent**: the agent's flag, or a deadline less than 24 h away (or past), while open. Urgent cards and their
   outline rows are highlighted.
-- **Outline** on the right (on a phone: the floating Outline button): one row per decision; a tap scrolls there.
-  The row of the card you're reading is highlighted.
+- **Outline** on the right (narrower screens: the Outline button; a phone: the floating one): one row per decision;
+  a tap scrolls there. The row of the card you're reading is highlighted. With nothing in the filter it says so
+  ("No open decisions.").
 - **Links between decisions**: "From D12" (came out of it), "Depends on D13" (waits for it), and back the other
   way ("Led to", "Needed by"), also across folders. A tap scrolls there, or shows it on top if it isn't in the list.
 - **Explain this**: instead of answering, ask the desk for a page that illustrates the decision and its options.
   It reaches the agent like an answer (`kind: "explain"`, text `EXPLAIN: …`). The decision stays open. When the
-  agent links the page, **Open explainer** shows it over the list.
+  agent links the page, **Open explainer** opens it as a tab; the Decisions tab keeps its place.
 - **No reloads, no jumps**: changes come over a live stream and patch only the card that changed. What you are
   reading stays exactly where it is: new decisions, longer updates above, a changed title. A card that leaves the
   filter (you just answered it) stays, dimmed, until you change the filter. Typed notes, picks and focus survive.
-  So does a reload: the page comes back to the same card.
+  So does a reload, and switching tabs: you come back to the same card.
 
 **For agents**: [docs/decisions-for-agents.md](docs/decisions-for-agents.md). In short:
 `artipeek decisions token <folder>` here, then `artipeek-decide add --file d.json` (or the JSON API with that
@@ -271,12 +276,14 @@ and free text, empty answers. `test.sh` covers the endpoint: login, device and s
 size limits, folders without answers, nothing logged.
 
 The decision hub is tested in a real browser with `bun run test:decisions`: the token API (other folder's token,
-no token, public listener, bad links all refused; an agent on 127.0.0.1 can't answer), order, urgency, outline,
+no token, public listener, bad links all refused; an agent on 127.0.0.1 can't answer), the app's one stream keeping
+to the listener's folders, order (newest first for history), a page of 30 and the rest at the end, urgency, outline
+(and its empty text),
 links between decisions, filters, live updates that keep what you read in place (laptop and phone), typed notes and
 picks through a live change, answers and multi-question picks through the sheet (line + commit + hub), explainer
 requests and the explainer viewer, the all-folders page, an outside write showing up live, the old link redirect.
 
-App tabs are tested in a real browser with `bun run test:tabs` (needs Chromium; set `CHROME_PATH` if it isn't at `/usr/bin/chromium`): links open and switch tabs, the file list highlight follows, switching back makes no request and keeps the scroll, HTML frames aren't reloaded, links inside HTML pages, Back, live update of a hidden tab, closing, reload, a second folder, a separate list per browser tab, phone width.
+App tabs are tested in a real browser with `bun run test:tabs` (needs Chromium; set `CHROME_PATH` if it isn't at `/usr/bin/chromium`): links open and switch tabs, the file list highlight follows, switching back makes no request and keeps the scroll, HTML frames aren't reloaded, links inside HTML pages, Back, live update of a hidden tab, closing, reload, every folder in the file list (loaded when opened), a file of a second folder, the one Decisions tab, a separate list per browser tab, phone width.
 
 The public listener is tested with a local fake certs endpoint and locally made RSA keys (`test-access.ts`): no token, bad signature, wrong aud/iss, expired, wrong email, `alg: none` → 403; valid header or cookie → 200; folders not in `public.roots` → 404 and not listed; path escapes → 404; key rotation; SSE with a token. This part waits ~30 s on purpose (key refetch limit). The admin CLI is tested on a temp config. If Tailscale is up, they also check the device rules: allowed device 200, other device 403, wrong tailnet 403, localhost 200.
 

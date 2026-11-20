@@ -89,7 +89,7 @@ c=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$R/")
 page=$(curl -s "$R/view/docs/note.md")
 grep -q 'id="tree"' <<<"$page" && grep -q 'data-dir="messages/2026-10-31-x"' <<<"$page" \
   && grep -q 'class="current"><span class="fi fi-md c-md" aria-hidden="true"></span><span class="name">note.md' <<<"$page" && ok "sidebar renders, current file highlighted" || bad "sidebar"
-grep -q 'class="roots"' <<<"$page" && ok "folder switcher present" || bad "folder switcher"
+grep -q 'class="rootlist"' <<<"$page" && grep -q 'data-root="one" open' <<<"$page" && grep -q 'class="navdec' <<<"$page" && ok "file list: Decisions, every folder, this one open" || bad "folder list"
 grep -q 'data-menu' <<<"$page" && curl -s "$B/_/style.css" | grep -q 'body.nav-open aside' && ok "phone menu button + drawer CSS" || bad "phone menu"
 grep -q 'hidden.md' <<<"$page" && bad "gitignored file listed" || ok "gitignored file not listed"
 grep -q 'escape.txt' <<<"$page" && bad "outside symlink listed" || ok "outside symlink not listed"
@@ -194,10 +194,10 @@ for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/r/two/v
 [ -n "$got" ] && ok "config change adds folder 'two' without restart" || bad "config reload"
 grep -q 'href="/r/home/"' <<<"$(curl -s "$B/")" && bad "home folder accepted as root" || ok "too-wide root (~) refused"
 grep -q 'bad' <<<"$(curl -s "$B/")" && bad "bad root name accepted" || ok "bad root name refused"
-grep -q 'href="/r/two/"' <<<"$(curl -s "$R/view/docs/note.md")" && ok "switcher lists the new folder" || bad "switcher missing two"
+grep -q 'data-root="two"' <<<"$(curl -s "$R/view/docs/note.md")" && ok "file list shows the new folder" || bad "file list missing two"
 
 # --- sidebar sort ---
-order() { tr -d '\n' | sed 's/.*<ul class="tree"//' | grep -o 'data-dir="sorttest/sub"\|data-path="sorttest/[ab]\.md"' | sed 's/.*"sorttest\/\(.*\)"/\1/' | tr '\n' ' '; }
+order() { tr -d '\n' | sed 's/.*<ul class="tree" data-root="one"//' | grep -o 'data-dir="sorttest/sub"\|data-path="sorttest/[ab]\.md"' | sed 's/.*"sorttest\/\(.*\)"/\1/' | tr '\n' ' '; }
 o=$(curl -s "$R/view/sorttest/a.md" | order)
 [ "$o" = "sub a.md b.md " ] && ok "sort name (default)" || bad "sort name: '$o'"
 hdr=$(curl -s -D - -o "$T/page" "$R/view/sorttest/a.md?sort=mtime" | tr -d '\r')
@@ -262,7 +262,7 @@ c=$(pc /r/one/view/docs/note.md -H "$(hv valid)"); [ "$c" = 200 ] && ok "public:
 c=$(pc /r/one/view/docs/note.md -H "Cookie: CF_Authorization=$(cat "$TOK/valid.jwt")"); [ "$c" = 200 ] && ok "public: valid token (cookie) -> 200" || bad "public cookie gave $c"
 ph=$(curl -s -H "$(hv valid)" "$P/"); pf=$(curl -s -H "$(hv valid)" "$P/r/one/view/docs/note.md")
 grep -q 'href="/r/one/"' <<<"$ph" && ! grep -q '/r/two/' <<<"$ph" && ok "public: home lists only public.roots" || bad "public home roots"
-grep -q 'class="roots"' <<<"$pf" && ! grep -q '/r/two/' <<<"$pf" && ok "public: switcher hides other folders" || bad "public switcher"
+grep -q 'class="rootlist"' <<<"$pf" && ! grep -q '/r/two/\|data-root="two"' <<<"$pf" && ok "public: file list hides other folders" || bad "public file list"
 for p in /r/two/ /r/two/view/README.md /r/two/raw/README.md /r/two/events "/r/one%2f..%2ftwo/raw/README.md"; do
   c=$(pc "$p" -H "$(hv valid)"); [ "$c" = 404 ] && ok "public: 404 $p (not in public.roots)" || bad "public $p gave $c"
 done

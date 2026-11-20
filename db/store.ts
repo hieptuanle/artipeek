@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { and, eq, inArray, desc, asc, or } from "drizzle-orm";
+import { and, eq, inArray, desc, asc, or, lt, isNotNull, sql, type SQL } from "drizzle-orm";
 import { mkdirSync, existsSync, writeFileSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -32,11 +32,13 @@ export type Input = {
   from?: string[]; dependsOn?: string[];
 };
 
+// Which decisions a page asks for. urgentAt: only open ones with the flag or a deadline before that time.
+export type ListOpts = { projects?: string[]; statuses?: string[]; urgentAt?: string; newestFirst?: boolean; limit?: number; offset?: number };
+
 export class InputError extends Error {}
 const bad = (m: string): never => { throw new InputError(m); };
 const now = () => new Date().toISOString();
 const hash = (t: string) => createHash("sha256").update(t).digest("hex");
-const natural = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 function str(v: unknown, name: string, max: number, opt = true): string | null {
   if (v === undefined || v === null || v === "") return opt ? null : bad(`${name} is required`);
@@ -167,9 +169,10 @@ export class Hub {
     const projects = [...new Set(rows.map((r) => r.project))];
     const want = new Set(rows.map((r) => `${r.project}\u0000${r.id}`));
     const k = (p: string, id: string) => `${p}\u0000${id}`;
-    const notes = this.db.select().from(s.notes).where(inArray(s.notes.project, projects)).orderBy(asc(s.notes.seq)).all();
-    const rels = this.db.select().from(s.relations).where(or(inArray(s.relations.project, projects), inArray(s.relations.toProject, projects))).all();
-    const ans = this.db.select().from(s.answers).where(inArray(s.answers.project, projects)).orderBy(desc(s.answers.at)).all();
+    const ids = [...new Set(rows.map((r) => r.id))]; // with projects: a small superset of the rows asked for
+    const notes = this.db.select().from(s.notes).where(and(inArray(s.notes.project, projects), inArray(s.notes.decisionId, ids))).orderBy(asc(s.notes.seq)).all();
+    const rels = this.db.select().from(s.relations).where(or(and(inArray(s.relations.project, projects), inArray(s.relations.decisionId, ids)), and(inArray(s.relations.toProject, projects), inArray(s.relations.toId, ids)))).all();
+    const ans = this.db.select().from(s.answers).where(and(inArray(s.answers.project, projects), inArray(s.answers.decisionId, ids))).orderBy(desc(s.answers.at)).all();
     // titles/statuses of every decision a relation points at (may be in another project)
     const ends = new Set<string>();
     for (const r of rels) { ends.add(k(r.project, r.decisionId)); ends.add(k(r.toProject, r.toId)); }
@@ -190,15 +193,34 @@ export class Hub {
     for (const a of ans) { const f = by.get(k(a.project, a.decisionId)); if (f && f.answers.length < 20) f.answers.push(a); }
     return out;
   }
-  // Oldest first (the order they were raised in).
-  list(opts: { projects?: string[]; statuses?: string[] } = {}): Full[] {
-    const conds = [];
-    if (opts.projects) { if (!opts.projects.length) return []; conds.push(inArray(s.decisions.project, opts.projects)); }
+  private where(opts: ListOpts): SQL | undefined | null {
+    const conds: SQL[] = [];
+    if (opts.projects) { if (!opts.projects.length) return null; conds.push(inArray(s.decisions.project, opts.projects)); }
     if (opts.statuses?.length) conds.push(inArray(s.decisions.status, opts.statuses as DecisionStatus[]));
-    const rows = this.db.select().from(s.decisions).where(conds.length ? and(...conds) : undefined).orderBy(asc(s.decisions.createdAt)).all();
-    // same raise time (an import, a batch): D2 before D10
-    rows.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.project === b.project ? natural.compare(a.id, b.id) : natural.compare(a.project, b.project)));
-    return this.full(rows);
+    if (opts.urgentAt) conds.push(eq(s.decisions.status, "open"), or(eq(s.decisions.urgent, true), and(isNotNull(s.decisions.deadline), lt(s.decisions.deadline, opts.urgentAt)))!);
+    return conds.length ? and(...conds) : undefined;
+  }
+  // The order they were raised in (or newest first), a page at a time. Same raise time (an import): D2 before D10.
+  list(opts: ListOpts = {}): Full[] {
+    const w = this.where(opts);
+    if (w === null) return [];
+    const dir = opts.newestFirst ? desc : asc;
+    let q = this.db.select().from(s.decisions).where(w)
+      .orderBy(dir(s.decisions.createdAt), asc(s.decisions.project), dir(sql`length(${s.decisions.id})`), dir(s.decisions.id)).$dynamic();
+    if (opts.limit) q = q.limit(opts.limit).offset(opts.offset ?? 0);
+    return this.full(q.all());
+  }
+  count(opts: ListOpts = {}): number {
+    const w = this.where(opts);
+    if (w === null) return 0;
+    return Number(this.db.select({ n: sql<number>`count(*)` }).from(s.decisions).where(w).get()?.n ?? 0);
+  }
+  // Latest answer per decision since a time, for answer buttons in a folder's own pages (explainers).
+  recentAnswers(project: string, since: string): { id: string; text: string; at: string; uid: string }[] {
+    const latest = new Map<string, { id: string; text: string; at: string; uid: string }>();
+    for (const a of this.db.select().from(s.answers).where(and(eq(s.answers.project, project), eq(s.answers.kind, "answer"))).orderBy(asc(s.answers.at)).all())
+      if (a.at >= since) latest.set(a.decisionId, { id: a.decisionId, text: a.text, at: a.at, uid: a.uid });
+    return [...latest.values()];
   }
   get(project: string, id: string): Full | null {
     const r = this.db.select().from(s.decisions).where(and(eq(s.decisions.project, project), eq(s.decisions.id, id))).get();

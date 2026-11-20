@@ -55,8 +55,8 @@ artipeek-decide add --file d.json          # → "D318 raised: http://…/r/my-d
 - **id**: leave it out, and the hub gives the next free one (same prefix as the folder's other ids: D, F, H…).
   Or set `"id": "D318"`. Ids are never reused.
 - **context**: Markdown, no raw HTML (it shows as text). A relative path links to a file in your folder.
-  `/r/<folder>/…` paths and `https://` links work too. They open in a new tab. An `.html` file opens over the
-  list.
+  `/r/<folder>/…` paths and `https://` links work too. Files open as artipeek tabs next to the Decisions tab;
+  web links open in a new browser tab.
 - **questions**: one question: its options are buttons, and a tap sends the choice (`A`, or `A: <note>`). Two or
   more: give each a `key` (Q1, Q2…) and a `text`. The person picks one option per question, then sends them all at
   once: `Q1 A, Q2 B` (`Q2 —` = no pick: not answered yet), plus `: <note>`. No questions: the person types an answer.
@@ -110,8 +110,8 @@ Then:
 2. Commit it (and sync, so it's in artipeek's copy of the folder).
 3. `artipeek-decide update D318 --explainer explainers/D318.html`
 
-The card then shows **Open explainer**. It opens over the list, and closing it brings the person back to the
-same spot.
+The card then shows **Open explainer**. It opens as an artipeek tab, and going back to the Decisions tab brings
+the person back to the same spot.
 
 ## API (if you don't use the CLI)
 

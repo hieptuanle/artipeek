@@ -1,16 +1,16 @@
-// Decision hub pages and the agents' API.
-//   /decisions                      every project you can see (filter by project at the top)
-//   /r/<project>/decisions          one project
-//   /decisions/events               live stream (no reload: the page patches cards in place)
-//   /decisions/part/list, /part/card/<project>/<id>   fragments for the page
+// Decision hub: the Decisions tab of artipeek's app, and the agents' API.
+//   /decisions, /r/<project>/decisions      the app with the Decisions tab open (project filter set by the second)
+//   /decisions/part/page                    the tab's content (filters, list, outline)
+//   /decisions/part/list, /part/card/<project>/<id>, /part/counts    fragments, a page of 30 at a time
 //   /api/decisions/<project>[/<id>[/notes]], /api/answers/<project>   agents, with the project's token
-// The API is never on the public listener. Agents can create and change decisions; only the person (artipeek's own
+// Live changes go out through artipeek's one stream (/_/events), via deps.broadcast.
+// The API is never on the public listener. Agents create and change decisions; only the person (artipeek's own
 // sheet, see server.ts answer()) can answer them.
 import MarkdownIt from "markdown-it";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { Hub, InputError, ID_RE, type Full, type Ref } from "../db/store.ts";
+import { Hub, InputError, ID_RE, type Full, type Ref, type ListOpts } from "../db/store.ts";
 import { STATUSES, type Question } from "../db/schema.ts";
 
 export const DECISIONS_JS = readFileSync(path.join(import.meta.dir, "client.js"), "utf8");
@@ -21,15 +21,19 @@ type RootLike = { name: string; base: string; resolve(rel: string): { rel: strin
 export type Deps = {
   hub: Hub;
   visibleRoots: (scope: Scope) => RootLike[];
-  shell: (o: { title: string; bodyClass: string; main: string; nonce: string; extraJs?: string; data?: Record<string, string> }) => string;
+  // send an event to every open page that can see this project (null: every page)
+  broadcast: (project: string | null, event: string, data: unknown) => void;
 };
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const enc = new TextEncoder();
 export const FILTERS: Record<string, string[] | null> = {
   open: ["open"], later: ["later"], answered: ["answered", "relayed"], closed: ["closed", "withdrawn"], all: null,
 };
+// The queue (open, later) reads oldest first; history (answered, closed, all) newest first.
+export const NEWEST_FIRST = new Set(["answered", "closed", "all"]);
+export const PAGE = 30;
 const FILTER_LABEL: Record<string, string> = { open: "Open", later: "Later", answered: "Answered", closed: "Closed", all: "All" };
+const EMPTY: Record<string, string> = { open: "No open decisions.", later: "Nothing for later.", answered: "No answered decisions.", closed: "No closed decisions.", all: "No decisions." };
 const STATUS_LABEL: Record<string, string> = { open: "open", later: "later", answered: "answered", relayed: "relayed to the desk", closed: "closed", withdrawn: "withdrawn" };
 export const URGENT_MS = 24 * 3600_000;
 export const isUrgent = (d: { status: string; urgent: boolean; deadline: string | null }, at = Date.now()) =>
@@ -40,9 +44,10 @@ const p2 = (n: number) => String(n).padStart(2, "0");
 const fmtTime = (iso: string) => { const d = new Date(iso); return `${p2(d.getDate())}/${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
 const timeTag = (iso: string, rel = false) => `<time datetime="${esc(iso)}" data-ts${rel ? " data-rel" : ""}>${esc(fmtTime(iso))}</time>`;
 const domId = (project: string, id: string) => `d:${project}:${id}`;
+const isFileLink = (h: string) => /^\/r\/[^/]+\/(view|raw)\//.test(h);
 
-// Agent text is Markdown without raw HTML. Paths become links into the project's folder; links open in a new tab
-// (or, for an .html file, in the page's own viewer) so the list keeps its place.
+// Agent text is Markdown without raw HTML. Paths become links into the project's folder; those open as artipeek
+// tabs (the app handles the click), the web opens in a new browser tab.
 function makeMd(project: string) {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: false });
   const base = `/r/${encodeURIComponent(project)}`;
@@ -52,10 +57,10 @@ function makeMd(project: string) {
     let href = t.attrGet("href") ?? "";
     if (href && !href.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("//")) {
       if (!href.startsWith("/")) href = `${base}/view/${href.replace(/^\.\//, "")}`;
+      href = href.replace(/^(\/r\/[^/]+)\/raw\//, "$1/view/");
       t.attrSet("href", href);
-      if (/^\/r\/[^/]+\/(view|raw)\/.+\.html?(#.*)?$/i.test(href)) t.attrSet("data-viewer", "");
     }
-    if (!href.startsWith("#")) { t.attrSet("target", "_blank"); t.attrSet("rel", "noopener noreferrer"); }
+    if (!href.startsWith("#") && !isFileLink(href)) { t.attrSet("target", "_blank"); t.attrSet("rel", "noopener noreferrer"); }
     return def(tokens, idx, opts, env, self);
   };
   return md;
@@ -68,10 +73,11 @@ const md = (project: string, src: string) => {
 };
 
 function hrefOf(project: string, h: string): string {
-  if (/^https?:/i.test(h) || h.startsWith("/")) return h;
+  if (/^https?:/i.test(h)) return h;
+  if (h.startsWith("/")) return h.replace(/^(\/r\/[^/]+)\/raw\//, "$1/view/");
   return `/r/${encodeURIComponent(project)}/view/${h.replace(/^\.\//, "")}`;
 }
-const linkAttrs = (href: string) => `href="${esc(href)}" target="_blank" rel="noopener noreferrer"${/^\/r\/[^/]+\/(view|raw)\/.+\.html?(#.*)?$/i.test(href) ? " data-viewer" : ""}`;
+const linkAttrs = (href: string) => `href="${esc(href)}"${isFileLink(href) ? "" : ' target="_blank" rel="noopener noreferrer"'}`;
 
 function refs(label: string, list: Ref[], d: Full): string {
   if (!list.length) return "";
@@ -117,17 +123,15 @@ function questionsHtml(d: Full, key: string): string {
 function explainerHtml(d: Full, root: RootLike | undefined): string {
   if (d.explainerPath) {
     const found = root?.resolve(d.explainerPath);
-    const raw = `${root?.base ?? `/r/${encodeURIComponent(d.project)}`}/raw/${d.explainerPath.split("/").map(encodeURIComponent).join("/")}`;
-    const view = raw.replace("/raw/", "/view/");
+    const view = `${root?.base ?? `/r/${encodeURIComponent(d.project)}`}/view/${d.explainerPath.split("/").map(encodeURIComponent).join("/")}`;
     if (!found) return `<div class="dexpl wait" data-a="x">Explainer <code>${esc(d.explainerPath)}</code> is not in the folder yet.</div>`;
-    const isHtml = /\.html?$/i.test(d.explainerPath);
-    return `<div class="dexpl ready" data-a="x">${isHtml ? `<button type="button" class="xopen" data-xopen="${esc(raw)}" data-xview="${esc(view)}">Open explainer</button>` : `<a class="xopen" ${linkAttrs(view)}>Open explainer</a>`} <span class="xpath">${esc(d.explainerPath)}</span></div>`;
+    return `<div class="dexpl ready" data-a="x"><a class="xopen" href="${esc(view)}">Open explainer</a> <span class="xpath">${esc(d.explainerPath)}</span></div>`;
   }
   if (d.explainerRequestedAt) return `<div class="dexpl wait" data-a="x">Explainer asked for ${timeTag(d.explainerRequestedAt)}. The desk is making it; it shows here when ready.</div>`;
   return "";
 }
 
-export function cardHtml(d0: Full, o: { showProject: boolean; root?: RootLike; visible: Set<string> }): string {
+export function cardHtml(d0: Full, o: { root?: RootLike; visible: Set<string> }): string {
   // links to folders this listener doesn't show (the public one) are left out: not even their titles
   const seen = (l: Ref[]) => l.filter((r) => o.visible.has(r.project));
   const d: Full = { ...d0, from: seen(d0.from), dependsOn: seen(d0.dependsOn), ledTo: seen(d0.ledTo), neededBy: seen(d0.neededBy) };
@@ -136,7 +140,7 @@ export function cardHtml(d0: Full, o: { showProject: boolean; root?: RootLike; v
   const open = d.status === "open" || d.status === "later";
   const lastAns = d.answers.find((a) => a.kind === "answer");
   const answers = d.answers.filter((a) => a.kind === "answer");
-  const head = `<header class="dh" data-a="h"><div class="dl1">${o.showProject ? `<a class="pj" href="/r/${esc(encodeURIComponent(d.project))}/decisions">${esc(d.project)}</a>` : ""}<a class="did" href="#${esc(domId(d.project, d.id))}">${esc(d.id)}</a><span class="dst dst-${esc(d.status)}">${esc(STATUS_LABEL[d.status] ?? d.status)}</span><span class="durg">Urgent</span>${d.lane ? `<span class="lane">${esc(d.lane)}</span>` : ""}</div>`
+  const head = `<header class="dh" data-a="h"><div class="dl1"><a class="pj" href="/r/${esc(encodeURIComponent(d.project))}/decisions" data-project="${esc(d.project)}" title="Only ${esc(d.project)}">${esc(d.project)}</a><a class="did" href="#${esc(domId(d.project, d.id))}">${esc(d.id)}</a><span class="dst dst-${esc(d.status)}">${esc(STATUS_LABEL[d.status] ?? d.status)}</span><span class="durg">Urgent</span>${d.lane ? `<span class="lane">${esc(d.lane)}</span>` : ""}</div>`
     + `<h2 class="dt">${esc(d.title)}</h2>`
     + `<div class="dm">Raised ${timeTag(d.createdAt)}${d.deadline ? ` · <span class="ddl">Deadline ${timeTag(d.deadline, true)}</span>` : ""}${d.deadlineNote ? ` · <span class="ddn">${esc(d.deadlineNote)}</span>` : ""}</div>`
     + `${d.from.length || d.dependsOn.length || d.ledTo.length || d.neededBy.length ? `<div class="drel">${[refs("From", d.from, d), refs("Depends on", d.dependsOn, d), refs("Led to", d.ledTo, d), refs("Needed by", d.neededBy, d)].filter(Boolean).join("")}</div>` : ""}</header>`;
@@ -147,97 +151,85 @@ export function cardHtml(d0: Full, o: { showProject: boolean; root?: RootLike; v
   const ans = lastAns ? `<div class="dans" data-a="a">You answered <b class="atext">${esc(lastAns.text)}</b> · ${timeTag(lastAns.at)}${answers.length > 1 ? `<details class="older"><summary>Earlier (${answers.length - 1})</summary><ul>${answers.slice(1).map((a) => `<li>${esc(a.text)} · ${timeTag(a.at)}</li>`).join("")}</ul></details>` : ""}</div>` : "";
   const res = d.resolution ? `<div class="dres" data-a="r"><b>Desk:</b> ${esc(d.resolution)}</div>` : "";
   const body = ctx + notes + noAns + links + explainerHtml(d, o.root) + questionsHtml(d, key);
-  const html = `<article class="dc dc-${esc(d.status)}${urgent ? " urgent" : ""}" id="${esc(domId(d.project, d.id))}" data-k="${esc(key)}" data-project="${esc(d.project)}" data-id="${esc(d.id)}" data-status="${esc(d.status)}" data-flag="${d.urgent ? 1 : 0}"${d.deadline ? ` data-deadline="${esc(d.deadline)}"` : ""} data-multi="${(d.questions?.length ?? 0) > 1 ? 1 : 0}"${lastAns ? ` data-answer="${esc(lastAns.text)}"` : ""}>`
+  const html = `<article class="dc dc-${esc(d.status)}${urgent ? " urgent" : ""}" id="${esc(domId(d.project, d.id))}" data-k="${esc(key)}" data-project="${esc(d.project)}" data-id="${esc(d.id)}" data-status="${esc(d.status)}" data-created="${esc(d.createdAt)}" data-flag="${d.urgent ? 1 : 0}"${d.deadline ? ` data-deadline="${esc(d.deadline)}"` : ""} data-multi="${(d.questions?.length ?? 0) > 1 ? 1 : 0}">`
     + head + ans + res + (open ? body : `<details class="dmore" data-a="m"><summary>Details and answer again</summary>${body}</details>`) + `</article>`;
   // a version for the live patcher: same html = nothing to do
   return html.replace("<article ", `<article data-v="${createHash("sha1").update(html).digest("hex").slice(0, 12)}" `);
 }
 
-export const outlineItem = (d: Full, showProject: boolean) =>
-  `<li class="oi oi-${esc(d.status)}${isUrgent(d) ? " urgent" : ""}" data-k="${esc(d.project)}/${esc(d.id)}"><a href="#${esc(domId(d.project, d.id))}"><span class="oid">${esc(d.id)}</span><span class="ot">${esc(d.title)}</span>${showProject ? `<span class="opj">${esc(d.project)}</span>` : ""}</a></li>`;
+export const outlineItem = (d: Full) =>
+  `<li class="oi oi-${esc(d.status)}${isUrgent(d) ? " urgent" : ""}" data-k="${esc(d.project)}/${esc(d.id)}"><a href="#${esc(domId(d.project, d.id))}"><span class="oid">${esc(d.id)}</span><span class="ot">${esc(d.title)}</span><span class="opj">${esc(d.project)}</span></a></li>`;
+
+export type Filter = { status: string; project: string | null; urgent: boolean };
+export function filterFrom(q: URLSearchParams): Filter {
+  const st = q.get("status") ?? "open";
+  return { status: st in FILTERS ? st : "open", project: q.get("project") || null, urgent: q.get("urgent") === "1" };
+}
 
 export function createDecisionsWeb(deps: Deps) {
   const { hub } = deps;
   const projectsIn = (scope: Scope) => deps.visibleRoots(scope).map((r) => r.name);
   const rootOf = (scope: Scope, project: string) => deps.visibleRoots(scope).find((r) => r.name === project);
+  const listOpts = (scope: Scope, f: Filter): ListOpts => ({
+    projects: f.project ? [f.project] : projectsIn(scope),
+    statuses: FILTERS[f.status] ?? undefined,
+    urgentAt: f.urgent ? new Date(Date.now() + URGENT_MS).toISOString() : undefined,
+    newestFirst: NEWEST_FIRST.has(f.status),
+  });
 
-  function listFor(scope: Scope, project: string | null, filter: string): Full[] {
-    const ps = project ? [project] : projectsIn(scope);
-    return hub.list({ projects: ps, statuses: FILTERS[filter] ?? FILTERS.open! });
-  }
-  function counts(scope: Scope, project: string | null) {
-    const ps = project ? [project] : projectsIn(scope);
+  // Per project: open/later/answered/closed/all, and urgent among open.
+  function counts(scope: Scope) {
+    const ps = projectsIn(scope);
     const c = hub.counts(ps);
-    // per project: open/later/answered/closed/all, plus urgent among open
-    const urg: Record<string, number> = {};
-    for (const d of hub.list({ projects: ps, statuses: ["open"] })) if (isUrgent(d)) urg[d.project] = (urg[d.project] ?? 0) + 1;
+    const urgentAt = new Date(Date.now() + URGENT_MS).toISOString();
     const out: Record<string, Record<string, number>> = {};
     for (const p of ps) {
       const s = c[p] ?? {};
       const g = (k: string) => (FILTERS[k] ?? STATUSES).reduce((n, st) => n + (s[st] ?? 0), 0);
-      out[p] = { open: g("open"), later: g("later"), answered: g("answered"), closed: g("closed"), all: g("all"), urgent: urg[p] ?? 0 };
+      out[p] = { open: g("open"), later: g("later"), answered: g("answered"), closed: g("closed"), all: g("all"), urgent: s.open ? hub.count({ projects: [p], urgentAt }) : 0 };
     }
     return out;
   }
-  function listPart(scope: Scope, project: string | null, filter: string) {
-    const list = listFor(scope, project, filter);
-    const show = !project;
+  // One page of cards (and outline rows) for a filter.
+  function listPart(scope: Scope, f: Filter, offset = 0, limit = PAGE) {
+    const o = listOpts(scope, f);
+    const list = hub.list({ ...o, limit, offset });
+    const total = hub.count(o);
     const visible = new Set(projectsIn(scope));
     return {
-      html: list.map((d) => cardHtml(d, { showProject: show, root: rootOf(scope, d.project), visible })).join(""),
-      outline: list.map((d) => outlineItem(d, show)).join(""),
-      counts: counts(scope, project),
+      html: list.map((d) => cardHtml(d, { root: rootOf(scope, d.project), visible })).join(""),
+      outline: list.map((d) => outlineItem(d)).join(""),
+      counts: counts(scope), total, next: offset + list.length < total ? offset + list.length : null,
+      empty: f.urgent ? "Nothing urgent." : EMPTY[f.status],
     };
   }
 
-  function page(scope: Scope, project: string | null, filter: string, nonce: string, canAnswer: boolean): string {
-    const part = listPart(scope, project, filter);
+  // The Decisions tab's content. Inside the app shell, or fetched by the app for a tab.
+  function pane(scope: Scope, f: Filter, canAnswer: boolean): string {
+    const part = listPart(scope, f);
     const projects = projectsIn(scope).filter((p) => (part.counts[p]?.all ?? 0) > 0);
-    const segs = Object.keys(FILTERS).map((f) => `<button type="button" data-status="${f}" aria-pressed="${f === filter}">${FILTER_LABEL[f]} <i data-count="${f}"></i></button>`).join("");
-    const pjs = project ? "" : `<div class="pjs" role="group" aria-label="Project"><button type="button" data-project="" aria-pressed="true">All projects</button>${projects.map((p) => `<button type="button" data-project="${esc(p)}" aria-pressed="false">${esc(p)} <i data-pcount="${esc(p)}"></i></button>`).join("")}</div>`;
-    const title = project ? `${project} decisions` : "Decisions";
-    const top = `<header class="dtop" id="dtop"><div class="dr1"><a class="home" href="/">artipeek</a><span class="sep">/</span>${project ? `<a href="/decisions">decisions</a><span class="sep">/</span><b>${esc(project)}</b>` : "<b>decisions</b><span class=\"allp\">all projects</span>"}<span class="live" title="Live updates">live</span><button type="button" class="obtn" data-outline aria-label="Outline">Outline</button></div>`
-      + `<div class="dfl"><div class="seg" role="group" aria-label="Status">${segs}</div><button type="button" class="urgf" data-urgent aria-pressed="false">Urgent <i data-count="urgent"></i></button></div>${pjs}`
+    const segs = Object.keys(FILTERS).map((s) => `<button type="button" data-status="${s}" aria-pressed="${s === f.status}">${FILTER_LABEL[s]} <i data-count="${s}"></i></button>`).join("");
+    const pjs = `<div class="pjs" role="group" aria-label="Project"><button type="button" data-project="" aria-pressed="${!f.project}">All projects</button>${projects.map((p) => `<button type="button" data-project="${esc(p)}" aria-pressed="${f.project === p}">${esc(p)} <i data-pcount="${esc(p)}"></i></button>`).join("")}</div>`;
+    const top = `<header class="dtop"><div class="dr1"><button type="button" class="menu" aria-label="Files" data-menu>☰</button><b class="dtitle">Decisions</b><span class="live" title="Live updates">live</span><button type="button" class="obtn" data-outline aria-label="Outline">Outline</button></div>`
+      + `<div class="dfl"><div class="seg" role="group" aria-label="Status">${segs}</div><button type="button" class="urgf" data-urgent aria-pressed="${f.urgent}">Urgent <i data-count="urgent"></i></button></div>${pjs}`
       + (canAnswer ? "" : `<p class="ro">This device can't send answers. Use the public link (login) or an answer device.</p>`) + `</header>`;
-    const main = `<div class="dwrap">${top}<div class="dgrid"><section id="dlist" class="dlist" aria-live="off">${part.html}</section><p class="dempty" id="dempty" hidden>Nothing here.</p>`
-      + `<nav class="dout" id="dout" aria-label="Outline"><div class="doh">Outline <button type="button" class="oclose" data-outline aria-label="Close outline">×</button></div><ol id="olist">${part.outline}</ol></nav></div></div>`
-      + `<button type="button" class="ofab" data-outline aria-label="Outline">☰ Outline</button><div id="dscrim" data-outline></div><script type="application/json" id="dcounts">${JSON.stringify(part.counts).replace(/</g, "\\u003c")}</script>`;
-    return deps.shell({ title, bodyClass: "dhub", main, nonce, extraJs: DECISIONS_JS, data: { project: project ?? "", filter, can: canAnswer ? "1" : "0" } });
+    const more = `<div class="dmorebox"${part.next === null ? " hidden" : ""}><button type="button" class="dmorebtn" data-more>Show more</button></div>`;
+    return `<div class="dpane" data-status="${f.status}" data-project="${esc(f.project ?? "")}" data-urgent="${f.urgent ? 1 : 0}" data-next="${part.next ?? ""}" data-total="${part.total}" data-can="${canAnswer ? 1 : 0}">${top}`
+      + `<div class="dgrid"><div class="dcol"><section class="dlist" aria-live="off">${part.html}</section><p class="dempty"${part.html ? " hidden" : ""}>${esc(part.empty)}</p>${more}</div>`
+      + `<nav class="dout" aria-label="Outline"><div class="doh">Outline <button type="button" class="oclose" data-outline aria-label="Close outline">×</button></div><ol class="olist">${part.outline}</ol><p class="oempty"${part.outline ? " hidden" : ""}>${esc(part.empty)}</p></nav></div>`
+      + `<button type="button" class="ofab" data-outline aria-label="Outline">☰ Outline</button><div class="dscrim" data-outline></div>`
+      + `<script type="application/json" class="dcounts">${JSON.stringify(part.counts).replace(/</g, "\\u003c")}</script></div>`;
   }
 
-  // ----- live stream -----
-  type Client = { ctrl: ReadableStreamDefaultController<Uint8Array>; scope: Scope; project: string | null };
-  const clients = new Set<Client>();
-  const send = (c: Client, ev: string, data: unknown) => { try { c.ctrl.enqueue(enc.encode(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)); } catch { clients.delete(c); } };
-  hub.onChange((project, id) => {
-    for (const c of clients) {
-      if (c.scope && !c.scope.has(project)) continue;
-      if (c.project && c.project !== project) {
-        // a change elsewhere can still change a link shown here (title, status): cheap to let the page re-check
-        if (id) send(c, "ref", { project, id });
-        continue;
-      }
-      send(c, id ? "d" : "all", { project, id });
-    }
-  });
+  // ----- live: changes go out through artipeek's stream -----
+  hub.onChange((project, id) => deps.broadcast(project, id ? "d" : "all", { project, id }));
   let ver = hub.dataVersion();
   setInterval(() => { // another process (import, admin CLI) wrote the file
     const v = hub.dataVersion();
-    if (v !== ver) { ver = v; for (const c of clients) send(c, "all", {}); }
+    if (v !== ver) { ver = v; deps.broadcast(null, "all", {}); }
   }, 1000);
-  setInterval(() => { const ping = enc.encode(`: ping\n\n`); for (const c of clients) { try { c.ctrl.enqueue(ping); } catch { clients.delete(c); } } }, 25_000);
-  // Deadlines cross the 24 h line without any write: tell pages once a minute so counts stay right.
-  setInterval(() => { for (const c of clients) send(c, "tick", {}); }, 60_000);
-
-  function events(req: Request, scope: Scope, project: string | null): Response {
-    let c: Client;
-    const stream = new ReadableStream<Uint8Array>({
-      start(ctrl) { c = { ctrl, scope, project }; clients.add(c); ctrl.enqueue(enc.encode(`retry: 2000\n: hello\n\n`)); },
-      cancel() { clients.delete(c); },
-    });
-    req.signal.addEventListener("abort", () => clients.delete(c));
-    return new Response(stream, { headers: { "Content-Type": "text/event-stream", Connection: "keep-alive", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
-  }
+  // Deadlines cross the 24 h line without any write: tell pages once a minute.
+  setInterval(() => deps.broadcast(null, "tick", {}), 60_000);
 
   // ----- agents' API -----
   const json = (status: number, o: unknown) => new Response(JSON.stringify(o, null, 1), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -300,49 +292,43 @@ export function createDecisionsWeb(deps: Deps) {
     }
   }
 
-  // ----- routes (GET) -----
-  // Returns null when the path isn't the hub's.
-  function route(req: Request, url: URL, scope: Scope, nonce: () => string, canAnswer: boolean): Response | null {
+  // ----- fragments (GET) -----
+  // The filter of a /decisions or /r/<project>/decisions address; null when the path isn't one (or the project is
+  // not visible here).
+  function pageFilter(url: URL, scope: Scope): Filter | null {
     const p = url.pathname;
-    const html = (s: string, csp?: string) => new Response(s, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", ...(csp ? { "Content-Security-Policy": csp } : {}) } });
-    const filterOf = () => { const f = url.searchParams.get("status") ?? "open"; return f in FILTERS ? f : "open"; };
-    const projOf = (raw: string | null): string | null | false => {
-      if (!raw) return null;
-      return projectsIn(scope).includes(raw) ? raw : false;
-    };
-    let m: RegExpExecArray | null;
-    if (p === "/decisions" || p === "/decisions/") return pageRes(null);
-    if ((m = /^\/r\/([^/]+)\/decisions\/?$/.exec(p))) {
-      let name: string;
-      try { name = decodeURIComponent(m[1]); } catch { return null; }
-      const pj = projOf(name);
-      return pj ? pageRes(pj) : null;
-    }
-    if (p === "/decisions/events") {
-      const pj = projOf(url.searchParams.get("project"));
-      return pj === false ? null : events(req, scope, pj);
-    }
+    const f = filterFrom(url.searchParams);
+    if (p === "/decisions" || p === "/decisions/") return f.project && !projectsIn(scope).includes(f.project) ? { ...f, project: null } : f;
+    const m = /^\/r\/([^/]+)\/decisions\/?$/.exec(p);
+    if (!m) return null;
+    let name: string;
+    try { name = decodeURIComponent(m[1]); } catch { return null; }
+    return projectsIn(scope).includes(name) ? { ...f, project: name } : null;
+  }
+  // Returns null when the path isn't one of the hub's fragments.
+  function part(url: URL, scope: Scope, canAnswer: boolean): Response | null {
+    const p = url.pathname;
+    const f = filterFrom(url.searchParams);
+    if (f.project && !projectsIn(scope).includes(f.project)) f.project = null;
+    const html = (s: string) => new Response(s, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+    if (p === "/decisions/part/page") return html(pane(scope, f, canAnswer));
     if (p === "/decisions/part/list") {
-      const pj = projOf(url.searchParams.get("project"));
-      if (pj === false) return null;
-      return json(200, listPart(scope, pj, filterOf()));
+      const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || PAGE));
+      return json(200, listPart(scope, f, offset, limit));
     }
-    if ((m = /^\/decisions\/part\/card\/([^/]+)\/([^/]+)$/.exec(p))) {
+    if (p === "/decisions/part/counts") return json(200, { counts: counts(scope) });
+    const m = /^\/decisions\/part\/card\/([^/]+)\/([^/]+)$/.exec(p);
+    if (m) {
       let name: string, id: string;
       try { name = decodeURIComponent(m[1]); id = decodeURIComponent(m[2]); } catch { return null; }
-      const pj = projOf(name);
-      if (!pj || !ID_RE.test(id)) return null;
-      const d = hub.get(pj, id);
+      if (!projectsIn(scope).includes(name) || !ID_RE.test(id)) return null;
+      const d = hub.get(name, id);
       if (!d) return json(404, { ok: false });
-      const show = url.searchParams.get("all") === "1";
-      return json(200, { ok: true, html: cardHtml(d, { showProject: show, root: rootOf(scope, pj), visible: new Set(projectsIn(scope)) }), item: outlineItem(d, show), status: d.status, counts: counts(scope, show ? null : pj) });
+      return json(200, { ok: true, html: cardHtml(d, { root: rootOf(scope, name), visible: new Set(projectsIn(scope)) }), item: outlineItem(d), status: d.status, urgent: isUrgent(d), created: d.createdAt, counts: counts(scope) });
     }
     return null;
-    function pageRes(project: string | null) {
-      const n = nonce();
-      return html(page(scope, project, filterOf(), n, canAnswer), `default-src 'self'; script-src 'nonce-${n}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
-    }
   }
 
-  return { route, api, page, counts, isUrgent };
+  return { api, pane, part, pageFilter, counts };
 }

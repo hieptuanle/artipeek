@@ -34,7 +34,7 @@ try {
     cur: [...document.querySelectorAll("#tree ul.tree a.current")].map((a: any) => a.dataset.path),
     panes: document.querySelectorAll(".pane").length,
     vis: document.querySelector(".pane:not([hidden]) .crumbs b")?.textContent,
-    url: location.pathname + location.hash, y: scrollY, title: document.title, root: document.querySelector("details.roots summary")?.textContent,
+    url: location.pathname + location.hash, y: scrollY, title: document.title, root: (document.querySelector("#tree ul.tree a.current") as any)?.dataset.base?.slice(3),
   }));
   const wait = (ms = 250) => Bun.sleep(ms);
   const p = await br.newPage(); await p.setViewport({ width: 1200, height: 700 });
@@ -98,16 +98,30 @@ try {
   await p.reload(); await wait(800); s = await st(p);
   ok(JSON.stringify(s.tabs) === JSON.stringify(left), "reload keeps list");
   ok(await p.evaluate(() => [...document.querySelectorAll(".pane")].every((x: any) => !x.textContent.includes("Loading"))), "reload refills every pane");
-  // second folder
-  await p.evaluate(() => (document.querySelector('details.roots a[href="/r/two/"]') as any).click()); await wait(500);
-  s = await st(p); ok(s.vis === "z.md" && s.root === "two" && s.cur[0] === "z.md" && s.tabs.length === left.length + 1, "folder switch keeps tabs, swaps sidebar");
+  // second folder: every folder is in the file list; it opens to its files (loaded then)
+  ok(await p.$$eval("#tree details[data-root]", (e: any) => e.map((x: any) => x.dataset.root).join()) === "one,two", "file list shows every folder");
+  ok(await p.$eval('#tree ul.tree[data-root="two"]', (e: any) => e.hasAttribute("data-lazy") && !e.children.length), "other folders load only when opened");
+  await p.click('#tree details[data-root="two"] > summary'); await wait(400);
+  await p.click('#tree ul.tree[data-root="two"] a[data-path="z.md"]'); await wait(500);
+  s = await st(p); ok(s.vis === "z.md" && s.root === "two" && s.cur[0] === "z.md" && s.tabs.length === left.length + 1, "a file of another folder opens as a tab, highlight follows");
   await p.evaluate(() => (document.querySelectorAll("#tabs .tab a")[0] as any).click()); await wait(500);
-  s = await st(p); ok(s.root === "one" && s.cur.length === 1, "tab of first folder swaps sidebar back " + s.cur);
+  s = await st(p); ok(s.root === "one" && s.cur.length === 1, "a tab of the first folder moves the highlight back " + s.cur);
+  // Decisions: one special tab, opened from the file list
+  await p.click("#tree a.navdec"); await wait(600);
+  s = await st(p);
+  ok(s.tabs.includes("Decisions") && s.url.startsWith("/decisions") && (await p.$(".pane:not([hidden]) .dpane")) !== null, "Decisions opens as an app tab");
+  ok(await p.$eval("#tree a.navdec", (e: any) => e.classList.contains("current")), "the file list marks Decisions");
+  const nTabs = s.tabs.length;
+  await p.evaluate(() => (document.querySelectorAll("#tabs .tab a")[0] as any).click()); await wait(300);
+  await p.click("#tree a.navdec"); await wait(300);
+  ok((await st(p)).tabs.length === nTabs, "…and there is only one Decisions tab");
+  await p.evaluate(() => (document.querySelectorAll("#tabs .tab a")[0] as any).click()); await wait(300);
   // independent browser tabs
+  const pTabs = (await st(p)).tabs.length;
   const q = await br.newPage(); await q.goto(B + "/r/one/view/a/first.md"); await wait();
   s = await st(q); ok(s.tabs.length === 1, "another browser tab has its own list");
   await q.evaluate(() => (document.querySelector('#tree ul.tree a[data-path="a/README.md"]') as any).click()); await wait();
-  ok((await st(q)).tabs.length === 2 && (await st(p)).tabs.length === left.length + 1, "lists do not leak between browser tabs");
+  ok((await st(q)).tabs.length === 2 && (await st(p)).tabs.length === pTabs, "lists do not leak between browser tabs");
   await q.close();
   // phone
   await p.setViewport({ width: 390, height: 800, isMobile: true, hasTouch: true }); await wait(300);

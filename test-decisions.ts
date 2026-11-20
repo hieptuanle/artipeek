@@ -70,6 +70,23 @@ try {
   const agentAns = await fetch(`${L}/r/one/answer`, { method: "POST", headers: { "Content-Type": "application/json", "X-Artipeek": "answer", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ id: "D1", text: "A" }) });
   ok(agentAns.status === 403, "an agent on 127.0.0.1 can't answer");
 
+  // ----- the app's one stream (/_/events) keeps to the listener's folders -----
+  {
+    const read = async (url: string, headers: Record<string, string>, act: () => Promise<void>) => {
+      const ac = new AbortController();
+      const r = await fetch(url, { headers, signal: ac.signal });
+      const rd = r.body!.getReader(); let txt = "";
+      const pump = (async () => { try { for (;;) { const { value, done } = await rd.read(); if (done) break; txt += new TextDecoder().decode(value); } } catch {} })();
+      await wait(300); await act(); await wait(1500); ac.abort(); await pump;
+      return txt;
+    };
+    const act = async () => { writeFileSync(join(secret, "s.md"), "# secret " + Date.now()); await api("POST", "/api/decisions/secret", { title: "Secret two" }, TOK.secret); };
+    const pub = await read(`${B}/_/events`, { "Cf-Access-Jwt-Assertion": jwt }, act);
+    const loc = await read(`${L}/_/events`, {}, act);
+    ok(loc.includes('"root":"secret"') && loc.includes('"project":"secret"'), "the app's stream: file and decision events of every folder (local)");
+    ok(!pub.includes("secret") && pub.includes(": hello"), "…but on the public listener none from a folder that isn't public");
+  }
+
   // ----- the page -----
   const p = await br.newPage();
   await p.setExtraHTTPHeaders({ "Cf-Access-Jwt-Assertion": readFileSync(join(tok, "valid.jwt"), "utf8") });
@@ -78,10 +95,10 @@ try {
   await p.goto(B + "/r/one/decisions"); await wait(600);
   await p.evaluate(() => { (window as any).__same = 1; }); // gone if the page reloads
   const info = () => p.evaluate(() => ({
-    cards: [...document.querySelectorAll("#dlist .dc:not([hidden])")].map((c) => (c as HTMLElement).dataset.id),
-    urgent: [...document.querySelectorAll("#dlist .dc.urgent")].map((c) => (c as HTMLElement).dataset.id),
-    outline: [...document.querySelectorAll("#olist .oi:not([hidden])")].map((c) => (c as HTMLElement).dataset.k),
-    ourg: [...document.querySelectorAll("#olist .oi.urgent")].map((c) => (c as HTMLElement).dataset.k),
+    cards: [...document.querySelectorAll(".dlist .dc:not([hidden])")].map((c) => (c as HTMLElement).dataset.id),
+    urgent: [...document.querySelectorAll(".dlist .dc.urgent")].map((c) => (c as HTMLElement).dataset.id),
+    outline: [...document.querySelectorAll(".olist .oi:not([hidden])")].map((c) => (c as HTMLElement).dataset.k),
+    ourg: [...document.querySelectorAll(".olist .oi.urgent")].map((c) => (c as HTMLElement).dataset.k),
     same: (window as any).__same === 1,
   }));
   let s = await info();
@@ -92,8 +109,8 @@ try {
   ok(await p.$eval("#d\\:one\\:D1 .drel", (e) => e.textContent!.includes("Led to") && e.textContent!.includes("two:D1")), "links: 'Led to' shows a decision in another project");
 
   // outline click scrolls to the card, under the top bar
-  await p.click('#olist .oi[data-k="one/D3"] a'); await wait(900);
-  const topOf = (sel: string) => p.$eval(sel, (e) => e.getBoundingClientRect().top - document.getElementById("dtop")!.getBoundingClientRect().bottom);
+  await p.click('.olist .oi[data-k="one/D3"] a'); await wait(900);
+  const topOf = (sel: string) => p.$eval(sel, (e) => e.getBoundingClientRect().top - document.querySelector(".dtop")!.getBoundingClientRect().bottom);
   let d = await topOf("#d\\:one\\:D3");
   ok(d > -2 && d < 30, `outline click scrolls to that decision (${Math.round(d)} px under the bar)`);
   await p.click('#d\\:one\\:D3 a.ref[data-ref="one/D2"]'); await wait(900);
@@ -101,15 +118,15 @@ try {
   ok(d > -2 && d < 30, "a 'Depends on D2' link scrolls to D2");
 
   // urgent filter
-  await p.click("button[data-urgent]"); await wait(200);
+  await p.click("button[data-urgent]"); await wait(600);
   s = await info();
   ok(JSON.stringify(s.cards) === '["D2","D3"]' && s.outline.length === 2, "urgent filter shows only urgent ones");
   ok(await p.$eval('[data-count="urgent"]', (e) => e.textContent) === "2", "urgent count");
-  await p.click("button[data-urgent]"); await wait(200);
+  await p.click("button[data-urgent]"); await wait(600);
 
   // ----- live update keeps your place -----
   // Read the middle of D2's context; then an agent adds a long update to D1 (above) and changes D2's title.
-  await p.evaluate(() => { const li = document.querySelectorAll("#d\\:one\\:D2 .dctx li")[12] as HTMLElement; scrollBy(0, li.getBoundingClientRect().top - document.getElementById("dtop")!.getBoundingClientRect().bottom - 3); });
+  await p.evaluate(() => { const li = document.querySelectorAll("#d\\:one\\:D2 .dctx li")[12] as HTMLElement; scrollBy(0, li.getBoundingClientRect().top - document.querySelector(".dtop")!.getBoundingClientRect().bottom - 3); });
   await wait(300);
   const probe = () => p.evaluate(() => { const li = document.querySelectorAll("#d\\:one\\:D2 .dctx li")[12] as HTMLElement; return { y: li.getBoundingClientRect().top, t: li.textContent }; });
   const before = await probe();
@@ -181,17 +198,23 @@ try {
   await wait(600);
   ok(await p.$eval("#d\\:one\\:D1 .dexpl", (e) => e.textContent!.includes("Explainer asked for")), "the card says the explainer is asked for");
   await api("PATCH", "/api/decisions/one/D1", { explainerPath: "docs/d2.html" }); await wait(1000);
-  ok(await p.$("#d\\:one\\:D1 [data-xopen]"), "when the desk links the page, 'Open explainer' shows");
+  ok(await p.$("#d\\:one\\:D1 a.xopen"), "when the desk links the page, 'Open explainer' shows");
+  await p.$eval("#d\\:one\\:D1 a.xopen", (e) => e.scrollIntoView({ block: "center" })); await wait(300);
   const y0 = await p.evaluate(() => scrollY);
-  await p.click("#d\\:one\\:D1 [data-xopen]"); await wait(800);
+  await p.click("#d\\:one\\:D1 a.xopen"); await wait(900);
   const xf = p.frames().find((f) => f.url().includes("/raw/docs/d2.html"));
-  ok(xf && (await xf.$eval("h1", (e) => e.textContent)) === "Explainer for D2", "the explainer opens over the list (sandboxed frame)");
+  ok(xf && (await xf.$eval("h1", (e) => e.textContent)) === "Explainer for D2", "the explainer opens as an artipeek tab (sandboxed frame)");
+  ok((await p.$$eval("#tabs .tab a", (e) => e.map((x) => x.textContent))).join() === "Decisions,d2.html", "…next to the Decisions tab");
   await xf!.click("#eb"); await wait(300);
-  ok((await sheet())?.text === "Q1 B" && (await sheet())?.id === "one · D2", "an answer button inside the explainer opens artipeek's sheet");
-  await p.click(".answersheet .acancel"); await p.click(".xview .xclose"); await wait(200);
-  ok(await p.evaluate(() => scrollY) === y0, "closing the explainer leaves the list where it was");
+  ok((await sheet())?.text === "Q1 B" && (await sheet())?.id === "D2", "an answer button inside the explainer opens artipeek's sheet");
+  await p.click(".answersheet .acancel"); await wait(200);
+  await p.click("#tabs .tab.dectab a"); await wait(400);
+  const y1 = await p.evaluate(() => scrollY);
+  ok(Math.abs(y1 - y0) <= 2, `back on the Decisions tab, the list is where it was (${Math.round(y0)} → ${Math.round(y1)})`);
 
   // ----- filters and peek -----
+  await p.click('button[data-status="closed"]'); await wait(600);
+  ok(await p.$eval(".oempty", (e) => !(e as HTMLElement).hidden && e.textContent === "No closed decisions.") && (await info()).outline.length === 0, "nothing in a filter: the outline says so");
   await p.click('button[data-status="answered"]'); await wait(600);
   s = await info();
   ok(JSON.stringify(s.cards) === '["D2"]', "status filter: answered");
@@ -202,20 +225,30 @@ try {
   // ----- all projects -----
   await p.goto(B + "/decisions"); await wait(600);
   s = await info();
-  ok(s.cards.includes("D1") && (await p.$$eval("#dlist .dc .pj", (e) => e.map((x) => x.textContent))).includes("two"), "all projects: every project's open decisions, with a project tag");
-  await p.click('.pjs button[data-project="two"]'); await wait(200);
+  ok(s.cards.includes("D1") && (await p.$$eval(".dlist .dc .pj", (e) => e.map((x) => x.textContent))).includes("two"), "all projects: every project's open decisions, with a project tag");
+  await p.click('.pjs button[data-project="two"]'); await wait(600);
   s = await info();
-  ok(JSON.stringify(s.cards) === '["D1"]' && (await p.$eval("#dlist .dc:not([hidden])", (e) => (e as HTMLElement).dataset.project)) === "two", "project filter");
+  ok(JSON.stringify(s.cards) === '["D1"]' && (await p.$eval(".dlist .dc:not([hidden])", (e) => (e as HTMLElement).dataset.project)) === "two", "project filter");
   await api("POST", "/api/decisions/two", { title: "Raised while filtered", questions: [] }, TOK.two); await wait(1200);
   ok((await info()).cards.length === 2, "live on the all-projects page too");
+  // answered: newest first, 30 at a time, more as you reach the end
+  for (let i = 0; i < 34; i++) await api("POST", "/api/decisions/two", { title: `Old answered ${i + 1}`, status: "answered", questions: [] }, TOK.two);
+  await p.click('button[data-status="answered"]'); await wait(800);
+  const ans = () => p.$$eval(".dlist .dc", (e) => e.map((x) => x.querySelector(".dt")!.textContent));
+  let a1 = await ans();
+  ok(a1.length === 30 && a1[0] === "Old answered 34" && a1[29] === "Old answered 5", `answered: newest first, a page of 30 (${a1.length}: ${a1[0]} … ${a1[a1.length - 1]})`);
+  ok(await p.$eval(".dmorebox", (e) => !(e as HTMLElement).hidden), "…with more to load");
+  await p.evaluate(() => scrollTo(0, document.documentElement.scrollHeight)); await wait(1200);
+  a1 = await ans();
+  ok(a1.length === 34 && a1[33] === "Old answered 1" && (await info()).outline.length === 34 && await p.$eval(".dmorebox", (e) => (e as HTMLElement).hidden), `the rest loads at the end (${a1.length})`);
 
   // ----- phone -----
   await p.setViewport({ width: 390, height: 800, isMobile: true, hasTouch: true });
   await p.goto(B + "/decisions"); await wait(600);
-  ok(await p.$eval("#dout", (e) => e.getBoundingClientRect().left >= innerWidth - 1), "phone: the outline is a drawer, closed");
-  await p.click(".obtn"); await wait(300);
-  ok(await p.$eval("#dout", (e) => e.getBoundingClientRect().right <= innerWidth + 1), "phone: Outline opens it");
-  await p.click('#olist .oi[data-k="one/D3"] a'); await wait(900);
+  ok(await p.$eval(".dout", (e) => e.getBoundingClientRect().left >= innerWidth - 1), "phone: the outline is a drawer, closed");
+  await p.click(".ofab"); await wait(300);
+  ok(await p.$eval(".dout", (e) => e.getBoundingClientRect().right <= innerWidth + 1), "phone: Outline opens it");
+  await p.click('.olist .oi[data-k="one/D3"] a'); await wait(900);
   ok(!(await p.evaluate(() => document.body.classList.contains("outline-open"))), "phone: picking one closes the drawer");
   ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "phone: no sideways scroll");
   // phone: the top bar scrolls away; your place still holds when a card above grows
@@ -224,14 +257,14 @@ try {
   await wait(300);
   const pp = () => p.evaluate(() => (document.querySelectorAll("#d\\:one\\:D3 .dctx li")[20] as HTMLElement).getBoundingClientRect().top);
   const pb = await pp();
-  await api("POST", "/api/decisions/one/D1/notes", { body: long(15) }); await wait(1200);
+  await api("POST", "/api/decisions/one/D5/notes", { body: long(15) }); await wait(1200); // D5 is above D3 (newest first)
   ok(Math.abs((await pp()) - pb) <= 2, `phone: what you read stays put (${Math.round((await pp()) - pb)} px)`);
   // another process writes the database (an import): the page catches up by itself
   const { openHub } = await import("./db/store.ts");
   const other = openHub(join(T, "cfg", "decisions.db"));
   other.create("one", { title: "Written by another process", questions: [] });
   await wait(2000);
-  ok(await p.evaluate(() => [...document.querySelectorAll("#dlist .dt")].some((e) => e.textContent === "Written by another process")), "a write from another process shows up live");
+  ok(await p.evaluate(() => [...document.querySelectorAll(".dlist .dt")].some((e) => e.textContent === "Written by another process")), "a write from another process shows up live");
   other.sqlite.close();
 
   // ----- old bookmark -----

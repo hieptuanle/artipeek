@@ -27,7 +27,7 @@ import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js";
 import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
 import { openHub } from "./db/store.ts";
-import { createDecisionsWeb, DECISIONS_CSS } from "./decisions/web.ts";
+import { createDecisionsWeb, DECISIONS_CSS, DECISIONS_JS } from "./decisions/web.ts";
 
 // ---------- args + config ----------
 function arg(name: string, def?: string): string | undefined {
@@ -393,6 +393,8 @@ class Root {
   broadcast(event: string, data: unknown) {
     const msg = enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     for (const c of this.clients) { try { c.enqueue(msg); } catch { this.clients.delete(c); } }
+    // the app's one stream: the same event, with the folder's name
+    toAll(this.name, event, event === "change" ? { root: this.name, paths: data } : { root: this.name });
   }
 
   defaultFile(): string {
@@ -432,6 +434,18 @@ class Root {
 }
 
 const roots = new Map<string, Root>();
+// The app's one live stream per browser tab (/_/events): every folder it may see, and the decision hub.
+type StreamClient = { ctrl: ReadableStreamDefaultController<Uint8Array>; scope: Set<string> | null };
+const allClients = new Set<StreamClient>();
+// folder null: for every page
+function toAll(folder: string | null, event: string, data: unknown) {
+  if (!allClients.size) return;
+  const msg = enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  for (const c of allClients) {
+    if (folder && c.scope && !c.scope.has(folder)) continue;
+    try { c.ctrl.enqueue(msg); } catch { allClients.delete(c); }
+  }
+}
 // A scope limits which folders exist for a listener (null = all; the public listener passes its list).
 type Scope = Set<string> | null;
 const answersFor = new Map<string, AnswersCfg>();
@@ -506,6 +520,7 @@ loadRoots();
 setInterval(() => {
   const ping = enc.encode(`: ping\n\n`);
   for (const r of roots.values()) for (const c of r.clients) { try { c.enqueue(ping); } catch { r.clients.delete(c); } }
+  for (const c of allClients) { try { c.ctrl.enqueue(ping); } catch { allClients.delete(c); } }
 }, 25_000);
 
 // ---------- markdown ----------
@@ -663,10 +678,10 @@ function sortFrom(req: Request, url: URL): { sort: Sort; fromParam: boolean } {
 }
 const sortCookie = (s: Sort) => `${SORT_COOKIE}=${s}; Path=/; Max-Age=31536000; SameSite=Lax`;
 
-function renderSidebar(root: Root, current: string, sort: Sort = "name"): string {
-  const link = (rel: string, label: string, withAge = false) =>
-    `<a href="${root.base}/view/${encPath(rel)}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(root.rowStatus(rel), rel)}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
-  const rec = root.recent().map((e) => `<li>${link(e.rel, e.rel, true)}</li>`).join("");
+// One folder's files and folders, for its node in the file list.
+const fileLink = (root: Root, rel: string, label: string, current: string, withAge = false) =>
+  `<a href="${root.base}/view/${encPath(rel)}" data-base="${root.base}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(root.rowStatus(rel), rel)}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
+function renderTree(root: Root, current: string, sort: Sort = "name"): string {
   const byTime = sort === "mtime";
   const walk = (n: Node, prefix: string): string => {
     // Name: folders first, then files, natural order. Modified: folders and files together, newest first.
@@ -682,426 +697,36 @@ function renderSidebar(root: Root, current: string, sort: Sort = "name"): string
     }
     for (const f of n.files) {
       const name = path.posix.basename(f);
-      items.push({ kind: 1, name, mtime: root.files.get(f)!.mtime, html: () => `<li class="file">${link(f, name, byTime)}</li>` });
+      items.push({ kind: 1, name, mtime: root.files.get(f)!.mtime, html: () => `<li class="file">${fileLink(root, f, name, current, byTime)}</li>` });
     }
     items.sort(byTime
       ? (a, b) => b.mtime - a.mtime || a.kind - b.kind || collator.compare(a.name, b.name)
       : (a, b) => a.kind - b.kind || collator.compare(a.name, b.name));
     return items.map((i) => i.html()).join("");
   };
-  return `<details class="recent" open><summary>Recent</summary><ul>${rec}</ul></details><ul class="tree" data-sort="${sort}">${walk(root.tree(), "")}</ul>`;
+  return walk(root.tree(), "");
+}
+// The 10 newest files of every folder this listener shows.
+function renderRecent(scope: Scope, active: Root | null, current: string): string {
+  const all = visibleRoots(scope).flatMap((r) => r.recent(10).map((e) => ({ r, e })));
+  all.sort((a, b) => b.e.mtime - a.e.mtime);
+  return all.slice(0, 10).map(({ r, e }) => `<li>${fileLink(r, e.rel, e.rel, r === active ? current : "", true).replace('<span class="name">', `<span class="rroot">${esc(r.name)}</span><span class="name">`)}</li>`).join("");
+}
+// The file list: Decisions, Recent, then every folder; a folder opens to its files (loaded when opened, except the
+// one in view).
+function renderNav(scope: Scope, active: Root | null, current: string, sort: Sort, onDecisions: boolean): string {
+  const dc = dec.counts(scope);
+  const open = Object.values(dc).reduce((n, c) => n + c.open, 0), urgent = Object.values(dc).reduce((n, c) => n + c.urgent, 0);
+  const decLink = `<a class="navdec${onDecisions ? " current" : ""}" href="/decisions"><span class="fi fi-dec" aria-hidden="true"></span><span class="name">Decisions</span><span class="nd-open" title="open">${open || ""}</span><span class="nd-urg" title="urgent">${urgent || ""}</span></a>`;
+  const nodes = visibleRoots(scope).map((r) => {
+    const here = r === active;
+    return `<li class="dir rootnode"><details data-root="${esc(r.name)}"${here ? " open" : ""}><summary>${DIR_ICON}<span class="name">${esc(r.name)}</span>${statusBadge(r.dirStatus.get(""))}</summary><ul class="tree" data-root="${esc(r.name)}"${here ? "" : " data-lazy"}>${here ? renderTree(r, current, sort) : ""}</ul></details></li>`;
+  }).join("");
+  return `${decLink}<details class="recent" open><summary>Recent</summary><ul>${renderRecent(scope, active, current)}</ul></details><ul class="rootlist" data-sort="${sort}">${nodes}</ul>`;
 }
 
-function rootSwitcher(current: string, scope: Scope): string {
-  const items = visibleRoots(scope)
-    .map((r) => `<li><a href="${r.base}/"${r.name === current ? ' class="current"' : ""}>${esc(r.name)}</a></li>`)
-    .join("");
-  return `<details class="roots"><summary>${esc(current)}</summary><ul><li><a href="/">All folders</a></li>${items}</ul></details>`;
-}
-
-const CLIENT_JS = `
-(() => {
-  const body = document.body;
-  const main = document.getElementById("main");
-  const tree = document.getElementById("tree");
-  const filter = document.getElementById("filter");
-  const tabbar = document.getElementById("tabs");
-
-  // phone menu (drawer)
-  const closeNav = () => body.classList.remove("nav-open");
-  document.addEventListener("click", (e) => {
-    const t = e.target.closest ? e.target : null;
-    if (t && t.closest("[data-menu]")) { body.classList.toggle("nav-open"); return; }
-    if (t && t.closest("#scrim")) closeNav();
-    const c = t && t.closest("[data-copy]");
-    if (c) copyCode(c);
-  });
-
-  // Copy button on code blocks. navigator.clipboard needs a secure context, so plain http on the LAN falls back to execCommand.
-  async function copyCode(btn) {
-    const pre = btn.parentElement.querySelector("pre");
-    if (!pre) return;
-    const text = pre.innerText.replace(/\\n$/, "");
-    let ok = false;
-    try { await navigator.clipboard.writeText(text); ok = true; } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-      document.body.appendChild(ta); ta.select();
-      try { ok = document.execCommand("copy"); } catch {}
-      ta.remove();
-    }
-    btn.textContent = ok ? "Copied" : "Failed";
-    btn.classList.toggle("done", ok);
-    clearTimeout(btn._t);
-    btn._t = setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
-  }
-  addEventListener("keydown", (e) => { if (e.key === "Escape") closeNav(); });
-
-  function ages(scope) {
-    const now = Date.now();
-    (scope || document).querySelectorAll(".age[data-mtime]").forEach((el) => {
-      const s = Math.max(0, Math.round((now - Number(el.dataset.mtime)) / 1000));
-      el.textContent = s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h"
-        : s < 31536000 ? Math.floor(s / 86400) + "d" : Math.floor(s / 31536000) + "y";
-    });
-  }
-  setInterval(ages, 30000);
-  if (!tree) return; // home page
-
-  // ----- app tabs -----
-  // Each open file has a pane in the page, hidden unless it is the active tab, so switching back fetches nothing.
-  // The list is in sessionStorage: every browser tab has its own, and it survives a reload.
-  const TABS = "artipeek-tabs";
-  const tabs = [];
-  let active = null;
-  let shownBase = null; // the folder the sidebar and the live stream are on
-  history.scrollRestoration = "manual";
-
-  const fileUrl = (t, kind) => t.base + "/" + kind + "/" + t.path.split("/").map(encodeURIComponent).join("/");
-  const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
-  const nameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
-  const findTab = (base, path) => tabs.find((t) => t.base === base && t.path === path);
-  function parseFile(u) {
-    const m = /^(\\/r\\/[^/]+)\\/(?:view|raw)\\/(.+)$/.exec(u.pathname);
-    if (!m) return null;
-    try { return { base: m[1], path: m[2].split("/").map(decodeURIComponent).join("/") }; } catch { return null; }
-  }
-  const note = (html) => '<div class="filebar"><button type="button" class="menu" aria-label="Files" data-menu>☰</button></div><p class="note">' + html + "</p>";
-
-  function addTab(base, path, y, pane) {
-    if (!pane) {
-      pane = document.createElement("section");
-      pane.className = "pane";
-      pane.hidden = true;
-      pane.innerHTML = note("Loading…");
-      main.appendChild(pane);
-    }
-    const t = { base, path, y: y || 0, pane, loaded: false, seq: 0, hash: "" };
-    tabs.push(t);
-    return t;
-  }
-  function saveTabs() {
-    try { sessionStorage.setItem(TABS, JSON.stringify(tabs.map((t) => ({ base: t.base, path: t.path, y: t.y })))); } catch {}
-  }
-  function readTabs() {
-    try {
-      const a = JSON.parse(sessionStorage.getItem(TABS) || "[]");
-      return Array.isArray(a) ? a.filter((s) => s && typeof s.path === "string" && /^\\/r\\/[^/]+$/.test(s.base)) : [];
-    } catch { return []; }
-  }
-
-  function drawTabs() {
-    tabbar.hidden = tabs.length < 2;
-    body.classList.toggle("has-tabs", tabs.length > 1);
-    const same = {};
-    tabs.forEach((t) => { const n = nameOf(t.path); same[n] = (same[n] || 0) + 1; });
-    tabbar.replaceChildren(...tabs.map((t, i) => {
-      const box = document.createElement("div");
-      box.className = t === active ? "tab active" : "tab";
-      box.dataset.i = i;
-      const a = document.createElement("a");
-      a.href = fileUrl(t, "view");
-      a.title = t.base.slice(3) + "/" + t.path;
-      // Many files share a name (email.html, README.md): then show the folder too.
-      a.textContent = (same[nameOf(t.path)] > 1 && dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path);
-      const x = document.createElement("button");
-      x.type = "button";
-      x.textContent = "×";
-      x.setAttribute("aria-label", "Close " + nameOf(t.path));
-      x.dataset.close = i;
-      box.append(a, x);
-      return box;
-    }));
-    const el = tabbar.querySelector(".active");
-    if (el && el.offsetLeft < tabbar.scrollLeft) tabbar.scrollLeft = el.offsetLeft - 8;
-    else if (el && el.offsetLeft + el.offsetWidth > tabbar.scrollLeft + tabbar.clientWidth) tabbar.scrollLeft = el.offsetLeft + el.offsetWidth - tabbar.clientWidth + 8;
-  }
-
-  // Ids repeat across panes (and hidden ones can't scroll), so look only inside the active one.
-  function jump(hash) {
-    const raw = hash.slice(1);
-    let dec = raw;
-    try { dec = decodeURIComponent(raw); } catch {}
-    const el = raw && (active.pane.querySelector('[id="' + CSS.escape(raw) + '"]') || active.pane.querySelector('[id="' + CSS.escape(dec) + '"]'));
-    if (el) el.scrollIntoView();
-    return !!el;
-  }
-
-  function markTree() {
-    tree.querySelectorAll("a.current").forEach((a) => a.classList.remove("current"));
-    tree.querySelectorAll('a[data-path="' + CSS.escape(active.path) + '"]').forEach((a) => a.classList.add("current"));
-    const c = tree.querySelector("ul.tree a.current");
-    if (!c) return;
-    for (let d = c.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
-    if (c.offsetTop < tree.scrollTop || c.offsetTop > tree.scrollTop + tree.clientHeight - 30) tree.scrollTop = c.offsetTop - tree.clientHeight / 2;
-  }
-
-  function activate(t, how, hash) {
-    if (t === active) {
-      if (how === "push" && hash) history.pushState(null, "", fileUrl(t, "view") + hash);
-      if (hash) jump(hash);
-      if (!t.loaded) load(t);
-      return;
-    }
-    if (active) { active.y = scrollY; active.pane.hidden = true; }
-    active = t;
-    t.pane.hidden = false;
-    const url = fileUrl(t, "view") + (hash || "");
-    if (how === "push") history.pushState(null, "", url);
-    else if (how === "replace") history.replaceState(null, "", url);
-    // Parent folder first, then the root (project): many folders hold a decisions.html or README.md.
-    document.title = (dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path) + " · " + t.base.slice(3) + " · artipeek";
-    drawTabs();
-    if (t.base !== shownBase) showFolder(t.base);
-    else markTree();
-    saveTabs();
-    if (t.loaded) { if (!hash || !jump(hash)) scrollTo(0, t.y); }
-    else { t.hash = hash || ""; scrollTo(0, 0); load(t); }
-  }
-
-  function openFile(base, path, hash, how) {
-    activate(findTab(base, path) || addTab(base, path), how || "push", hash);
-  }
-
-  function closeTab(t) {
-    const i = tabs.indexOf(t);
-    if (i < 0 || tabs.length < 2) return;
-    tabs.splice(i, 1);
-    t.seq++; // drop any fetch still running for it
-    t.pane.remove();
-    if (t === active) { active = null; activate(tabs[Math.min(i, tabs.length - 1)], "replace"); }
-    else { drawTabs(); saveTabs(); }
-  }
-
-  const mtimeOf = (html) => (/data-mtime="(\\d+)"/.exec(html) || [])[1];
-  // onlyIfNewer: after a gap in the live stream. Don't reset a page (an iframe restarts) if its file didn't change.
-  async function load(t, onlyIfNewer) {
-    const seq = ++t.seq;
-    let r = null, html = "";
-    try { r = await fetch(fileUrl(t, "part/main")); html = await r.text(); } catch { r = null; }
-    if (seq !== t.seq) return; // a newer load took over, or the tab closed
-    const first = !t.loaded;
-    if (r && r.ok) {
-      if (onlyIfNewer && !first && mtimeOf(html) === mtimeOf(t.pane.innerHTML)) return;
-      const y = scrollY;
-      t.pane.innerHTML = html;
-      ages(t.pane);
-      t.loaded = true;
-      if (t === active && !(t.hash && jump(t.hash))) scrollTo(0, first ? t.y : y);
-      t.hash = "";
-    } else if (r && r.status === 404) {
-      t.pane.innerHTML = note("This file was removed.");
-      t.loaded = true;
-    } else if (first) {
-      t.pane.innerHTML = note('Could not load this file. <button type="button" data-retry>Try again</button>');
-    }
-  }
-  async function loadStatus(t) {
-    const r = await fetch(fileUrl(t, "part/status"));
-    const el = t.pane.querySelector("#stbar");
-    if (r.ok && el) el.outerHTML = await r.text();
-  }
-
-  // One live stream per browser tab, on the folder in view. Tabs of other folders catch up when you go back to them.
-  let stream = null;
-  function connect(base, catchUp) {
-    if (stream) stream.close();
-    const es = stream = new EventSource(base + "/events");
-    es.addEventListener("change", (ev) => {
-      const paths = JSON.parse(ev.data);
-      const dirs = paths.filter((p) => /\\.(md|markdown|html?)$/i.test(p)).map(dirOf);
-      for (const t of tabs) {
-        if (t.base !== base || !t.loaded) continue;
-        if (paths.includes(t.path)) load(t);
-        else if (dirs.includes(dirOf(t.path))) loadStatus(t);
-      }
-    });
-    es.addEventListener("tree", refreshTree);
-    es.onerror = () => { catchUp = true; body.classList.add("offline"); };
-    es.onopen = () => {
-      body.classList.remove("offline");
-      if (catchUp) { catchUp = false; refreshTree(); tabs.forEach((t) => { if (t.base === base && t.loaded) load(t, true); }); }
-    };
-  }
-  function showFolder(base) {
-    const first = shownBase === null;
-    shownBase = base;
-    const box = document.querySelector("details.roots");
-    box.open = false;
-    box.querySelector("summary").textContent = base.slice(3);
-    box.querySelectorAll("a").forEach((a) => a.classList.toggle("current", a.getAttribute("href") === base + "/"));
-    connect(base, !first);
-    if (first) markTree(); else refreshTree();
-  }
-
-  document.addEventListener("click", (e) => {
-    const x = e.target.closest("[data-close]");
-    if (x) { closeTab(tabs[Number(x.dataset.close)]); return; }
-    if (e.target.closest("[data-retry]")) { load(active); return; }
-    const a = e.target.closest("a[href]");
-    if (!a || e.defaultPrevented || e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || a.target || a.hasAttribute("download")) return;
-    const u = new URL(a.href);
-    if (u.origin !== location.origin) return;
-    if (a.getAttribute("href").startsWith("#")) { // a heading or footnote in this file
-      e.preventDefault();
-      history.pushState(null, "", u.href);
-      jump(u.hash);
-      return;
-    }
-    const f = parseFile(u);
-    if (f) { e.preventDefault(); closeNav(); openFile(f.base, f.path, u.hash); return; }
-    if (/^\\/r\\/[^/]+\\/$/.test(u.pathname)) { // a folder: the server picks its first file
-      e.preventDefault();
-      closeNav();
-      fetch(u.href).then((r) => {
-        const d = r.ok && parseFile(new URL(r.url));
-        if (d) openFile(d.base, d.path); else location.href = u.href;
-      }).catch(() => { location.href = u.href; });
-    }
-  });
-  tabbar.addEventListener("auxclick", (e) => { // middle click closes
-    const box = e.button === 1 && e.target.closest(".tab");
-    if (box) { e.preventDefault(); closeTab(tabs[Number(box.dataset.i)]); }
-  });
-  // A link clicked inside an HTML page: its frame can't open tabs, so it asks (see FRAME_LINKS). Only the visible page counts.
-  addEventListener("message", (e) => {
-    const f = active.pane.querySelector("iframe");
-    if (!f || e.source !== f.contentWindow || !e.data || e.data.artipeek !== "open" || typeof e.data.href !== "string") return;
-    let u;
-    try { u = new URL(e.data.href); } catch { return; }
-    const d = u.origin === location.origin && parseFile(u);
-    if (d) openFile(d.base, d.path, u.hash);
-  });
-  // An answer button in an HTML page (see frameAnswers): show artipeek's own sheet with the exact text. Only a
-  // real click on Send here posts it; the page itself can't send anything or press this button.
-  let sheet = null;
-  addEventListener("message", (e) => {
-    const f = active && active.pane.querySelector("iframe");
-    if (!f || e.source !== f.contentWindow || !e.data || e.data.artipeek !== "answer") return;
-    const id = String(e.data.id || ""), text = String(e.data.text || "").trim();
-    if (!/^[A-Za-z][A-Za-z0-9._-]{0,31}$/.test(id) || !text || text.length > 2000) return;
-    askAnswer(active, f, id, text);
-  });
-  // HTML pages keep their place across live reloads (see frameState): scroll and typed text, per file, in this
-  // browser tab's sessionStorage. Any open tab's frame counts: hidden tabs reload live too.
-  const frameKey = (t) => "artipeek-frame:" + t.base + "/" + t.path;
-  addEventListener("message", (e) => {
-    if (!e.data || (e.data.artipeek !== "state" && e.data.artipeek !== "ready")) return;
-    const t = tabs.find((x) => { const f = x.pane.querySelector("iframe"); return f && e.source === f.contentWindow; });
-    if (!t) return;
-    if (e.data.artipeek === "ready") {
-      let st = null;
-      try { st = JSON.parse(sessionStorage.getItem(frameKey(t)) || "null"); } catch (x) {}
-      if (st) e.source.postMessage({ artipeek: "restore", y: st.y, fields: st.fields }, "*");
-      return;
-    }
-    const fields = {};
-    if (e.data.fields && typeof e.data.fields === "object")
-      for (const [k, v] of Object.entries(e.data.fields).slice(0, 50)) if (typeof v === "string" && k.length <= 100) fields[k] = v.slice(0, 4000);
-    try { sessionStorage.setItem(frameKey(t), JSON.stringify({ y: Math.max(0, Number(e.data.y) || 0), fields: fields })); } catch (x) {}
-  });
-  function askAnswer(t, frame, id, text) {
-    if (sheet) sheet.remove();
-    const s = document.createElement("div");
-    s.className = "answersheet"; s.setAttribute("role", "dialog"); s.setAttribute("aria-modal", "true");
-    s.innerHTML = '<div class="box"><p class="q">Send this answer?</p><p class="aid"></p><pre class="atext"></pre><p class="afrom"></p><p class="amsg" aria-live="polite"></p><div class="btns"><button type="button" class="acancel">Cancel</button><button type="button" class="asend">Send</button></div></div>';
-    s.querySelector(".aid").textContent = id;
-    s.querySelector(".atext").textContent = text;
-    s.querySelector(".afrom").textContent = "From " + t.path;
-    const msg = s.querySelector(".amsg"), send = s.querySelector(".asend");
-    const close = () => { s.remove(); if (sheet === s) sheet = null; };
-    s.querySelector(".acancel").addEventListener("click", close);
-    s.addEventListener("click", (ev) => { if (ev.target === s) close(); });
-    s.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
-    send.addEventListener("click", async (ev) => {
-      if (!ev.isTrusted || send.disabled) return;
-      send.disabled = true; msg.textContent = "Saving…";
-      try {
-        const r = await fetch(t.base + "/answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Artipeek": "answer" }, body: JSON.stringify({ id: id, text: text, page: t.path }) });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.ok) throw new Error(j.error || "HTTP " + r.status);
-        msg.textContent = "Saved at " + new Date(j.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + (j.committed ? "." : " (not committed yet).");
-        const cur = t.pane.querySelector("iframe") || frame; // a live reload may have swapped the frame meanwhile
-        try { cur.contentWindow.postMessage({ artipeek: "answer-saved", id: id, text: text, at: j.at, uid: j.uid }, "*"); } catch (x) {}
-        setTimeout(close, 1500);
-      } catch (err) { msg.textContent = "Not saved: " + err.message; send.disabled = false; }
-    });
-    document.body.appendChild(s); sheet = s; send.focus();
-  }
-  addEventListener("popstate", () => {
-    const f = parseFile(location);
-    if (f) openFile(f.base, f.path, location.hash, "none"); else location.reload();
-  });
-  addEventListener("pagehide", () => { active.y = scrollY; saveTabs(); });
-  addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); }); // back from another page: the list may have moved on
-
-  // ----- sidebar -----
-  const openKey = () => "artipeek-open:" + shownBase;
-  const loadOpen = () => { try { return new Set(JSON.parse(localStorage.getItem(openKey()) || "[]")); } catch { return new Set(); } };
-  const save = (s) => { try { localStorage.setItem(openKey(), JSON.stringify([...s])); } catch {} };
-  function restore() {
-    const open = loadOpen();
-    tree.querySelectorAll("details[data-dir]").forEach((d) => {
-      if (open.has(d.dataset.dir)) d.open = true;
-      d.addEventListener("toggle", () => { const s = loadOpen(); d.open ? s.add(d.dataset.dir) : s.delete(d.dataset.dir); save(s); });
-    });
-    applyFilter();
-  }
-  function applyFilter() {
-    const q = filter.value.trim().toLowerCase();
-    tree.querySelectorAll("ul.tree li.file").forEach((li) => {
-      li.hidden = !!q && !li.firstElementChild.dataset.path.toLowerCase().includes(q);
-    });
-    tree.querySelectorAll("ul.tree li.dir").forEach((li) => {
-      li.hidden = !!q && !li.querySelector("li.file:not([hidden])");
-      if (q) li.firstElementChild.open = true;
-    });
-    const r = tree.querySelector("details.recent"); if (r) r.hidden = !!q;
-  }
-  filter.addEventListener("input", applyFilter);
-  filter.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { const a = tree.querySelector("ul.tree li.file:not([hidden]) a"); if (a) a.click(); }
-    if (e.key === "Escape") { filter.value = ""; applyFilter(); }
-  });
-  const sortBtns = document.querySelectorAll("#sort button");
-  const getSort = () => { const b = document.querySelector('#sort button[aria-pressed="true"]'); return b ? b.dataset.sort : "name"; };
-  let treeSeq = 0;
-  async function refreshTree() {
-    const seq = ++treeSeq;
-    const r = await fetch(shownBase + "/part/tree?current=" + encodeURIComponent(active.path) + "&sort=" + getSort());
-    if (r.ok) {
-      const html = await r.text();
-      if (seq !== treeSeq) return;
-      const top = tree.scrollTop;
-      tree.innerHTML = html;
-      restore();
-      tree.scrollTop = top;
-      markTree();
-    }
-  }
-  sortBtns.forEach((b) => b.addEventListener("click", () => {
-    if (b.getAttribute("aria-pressed") === "true") return;
-    sortBtns.forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-    document.cookie = "${SORT_COOKIE}=" + b.dataset.sort + "; Path=/; Max-Age=31536000; SameSite=Lax";
-    refreshTree();
-  }));
-
-  // ----- start: the saved list, plus the file the server just rendered -----
-  const here = { base: body.dataset.base, path: body.dataset.path };
-  const firstPane = main.querySelector(".pane");
-  for (const s of readTabs()) {
-    if (findTab(s.base, s.path)) continue;
-    addTab(s.base, s.path, s.y, s.base === here.base && s.path === here.path ? firstPane : null);
-  }
-  const start = findTab(here.base, here.path) || addTab(here.base, here.path, 0, firstPane);
-  start.loaded = true;
-  activate(start, "none", location.hash);
-  restore();
-  (async () => { // refill the other tabs so they switch at once after a reload
-    for (const t of [...tabs]) if (!t.loaded && tabs.includes(t)) await load(t);
-  })();
-})();
-`;
+// The app in the browser (tabs, file list, live updates). Plain JS files, inline with the page's nonce.
+const CLIENT_JS = readFileSync(path.join(import.meta.dir, "client", "app.js"), "utf8");
 
 // Added to an HTML page shown in artipeek's own frame. The sandbox stops the page from opening tabs (and artipeek's
 // pages can't load inside a frame), so a click on a link to a file here asks the parent page to open it.
@@ -1150,8 +775,10 @@ function recentAnswers(root: Root, cfg: AnswersCfg): string {
     if (r && typeof r.id === "string" && ANSWER_ID_RE.test(r.id) && typeof r.text === "string" && Date.parse(r.at) >= since)
       latest.set(r.id, { id: r.id, text: r.text.slice(0, 2000), at: String(r.at), uid: String(r.uid ?? "").slice(0, 32) });
   }
-  return JSON.stringify([...latest.values()]).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  return safeJson([...latest.values()]);
 }
+// JSON safe inside a <script> (no "<", ">", "&", U+2028/9).
+const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 
 const CSS = ICON_CSS + `
 :root { --tabh:0px; color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --side:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --cur:#ddf4ff; --code:#f6f8fa; }
@@ -1162,6 +789,21 @@ body.app { display:grid; grid-template-columns: minmax(220px, 320px) 1fr; min-he
 aside { background:var(--side); border-right:1px solid var(--line); height:100dvh; display:flex; flex-direction:column; position:sticky; top:0; }
 aside header { padding:10px 12px 8px; border-bottom:1px solid var(--line); }
 .headrow { display:flex; align-items:center; gap:8px; }
+.headrow .brand { flex:1; min-width:0; font-weight:600; font-size:14px; color:var(--fg); text-decoration:none; }
+/* the file list: Decisions, Recent, then every folder */
+#tree a.navdec { margin:2px 0 6px; padding:5px 8px; font-weight:600; border-bottom:1px solid var(--line); border-radius:6px 6px 0 0; }
+#tree a.navdec .fi-dec { width:16px; height:16px; flex:none; border-radius:4px; background:var(--accent); -webkit-mask:none; mask:none; position:relative; }
+#tree a.navdec .fi-dec::after { content:"?"; position:absolute; inset:0; color:#fff; font:700 11px/16px system-ui, sans-serif; text-align:center; }
+#tree a.navdec .nd-open, #tree a.navdec .nd-urg { font-size:11px; font-weight:600; padding:0 6px; border-radius:999px; line-height:17px; }
+#tree a.navdec .nd-open { margin-left:auto; background:var(--cur); color:var(--accent); }
+#tree a.navdec .nd-urg { background:#cf222e; color:#fff; }
+#tree a.navdec .nd-open:empty, #tree a.navdec .nd-urg:empty { display:none; }
+#tree ul.rootlist { padding-left:4px; }
+#tree li.rootnode > details > summary { font-weight:600; }
+#tree li.rootnode > details > ul.tree { padding-left:12px; }
+#tree ul.tree[data-lazy]:empty::before { content:"Loading…"; display:block; padding:2px 8px; color:var(--muted); font-style:italic; }
+#tree .rroot { flex:none; font-size:10.5px; color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:0 5px; max-width:90px; overflow:hidden; text-overflow:ellipsis; }
+#tree a.navdec[hidden], #tree details.recent[hidden], #tree li.rootnode[hidden] { display:none; }
 details.roots { position:relative; flex:1; min-width:0; }
 details.roots > summary { cursor:pointer; font-weight:600; font-size:14px; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 details.roots > summary::after { content:" ▾"; color:var(--muted); font-weight:400; }
@@ -1310,7 +952,7 @@ ${DECISIONS_CSS}
 }
 `;
 
-function shell(opts: { title: string; bodyClass: string; data?: Record<string, string>; aside?: string; main: string; nonce: string; extraJs?: string }) {
+function shell(opts: { title: string; bodyClass: string; data?: Record<string, string>; aside?: string; main: string; nonce: string }) {
   const data = Object.entries(opts.data ?? {}).map(([k, v]) => ` data-${k}="${esc(v)}"`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
@@ -1318,17 +960,23 @@ function shell(opts: { title: string; bodyClass: string; data?: Record<string, s
 <meta name="apple-mobile-web-app-title" content="artipeek">
 <title>${esc(opts.title)} · artipeek</title><link rel="stylesheet" href="/_/style.css"></head>
 <body class="${opts.bodyClass}"${data}>${opts.aside ?? ""}<div id="scrim"></div><main id="main">${opts.main}</main>
-<script nonce="${opts.nonce}">${CLIENT_JS}</script>${opts.extraJs ? `<script nonce="${opts.nonce}">${opts.extraJs}</script>` : ""}</body></html>`;
+<script nonce="${opts.nonce}">${DECISIONS_JS}</script><script nonce="${opts.nonce}">${CLIENT_JS}</script></body></html>`;
 }
 
+// The app: the file list (every folder) on the left, tabs, and one tab's pane (a file, or Decisions).
+function appAside(scope: Scope, active: Root | null, current: string, sort: Sort, onDecisions: boolean): string {
+  return `<aside><header><div class="headrow"><a class="brand" href="/">artipeek</a><span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
+<nav id="tree">${renderNav(scope, active, current, sort, onDecisions)}</nav></aside>`;
+}
 function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope): string {
-  const aside = `<aside><header><div class="headrow">${rootSwitcher(root.name, scope)}<span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
-<nav id="tree">${renderSidebar(root, current, sort)}</nav></aside>`;
-  return shell({ title: current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name, bodyClass: "app", data: { base: root.base, path: current }, aside, main: `<nav id="tabs" aria-label="Open files" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
+  return shell({ title: current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name, bodyClass: "app", data: { kind: "file", base: root.base, path: current }, aside: appAside(scope, root, current, sort, false), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
+}
+function decisionsPage(scope: Scope, q: string, paneHtml: string, nonce: string, sort: Sort): string {
+  return shell({ title: "Decisions", bodyClass: "app", data: { kind: "dec", q }, aside: appAside(scope, null, "", sort, true), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${paneHtml}</section>`, nonce });
 }
 
 function homePage(nonce: string, scope: Scope): string {
-  const dc = dec.counts(scope, null);
+  const dc = dec.counts(scope);
   const withDec = Object.entries(dc).filter(([, c]) => c.all > 0);
   const open = withDec.reduce((n, [, c]) => n + c.open, 0), urgent = withDec.reduce((n, [, c]) => n + c.urgent, 0);
   const decCard = withDec.length ? `<section class="rootcard deccard"><h2><a href="/decisions">Decisions</a><span class="count">${open} open${urgent ? ` · <b class="hot">${urgent} urgent</b>` : ""}</span></h2><ul>${withDec.map(([p, c]) => `<li><a href="/r/${esc(encodeURIComponent(p))}/decisions"><span class="name">${esc(p)}</span><span class="age">${c.open} open${c.urgent ? `, <b class="hot">${c.urgent} urgent</b>` : ""}</span></a></li>`).join("")}</ul></section>` : "";
@@ -1379,7 +1027,7 @@ const decode = (s: string): string | null => { try { return decodeURIComponent(s
 // Who is asking: a Cloudflare Access login (public listener), a tailnet device, or null (127.0.0.1).
 type Who = { email: string } | { device: string } | null;
 
-const dec = createDecisionsWeb({ hub, visibleRoots, shell });
+const dec = createDecisionsWeb({ hub, visibleRoots, broadcast: toAll });
 // Who may send answers from a page: a Cloudflare Access login, or a device in answerDevices. Never plain 127.0.0.1.
 const answerBy = (who: Who) => who && "email" in who ? who.email : who && "device" in who && ANSWER_DEVICES.has(who.device.split(".")[0]) ? who.device : "";
 
@@ -1403,9 +1051,29 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
     const nonce = randomBytes(16).toString("base64");
     return new Response(homePage(nonce, scope), { headers: { ...HTML, "Content-Security-Policy": pageCsp(nonce) } });
   }
-  if (p.startsWith("/decisions") || /^\/r\/[^/]+\/decisions\/?$/.test(p)) {
-    const r = dec.route(req, url, scope, () => randomBytes(16).toString("base64"), !!answerBy(who));
-    if (r) return r;
+  // the app's one live stream: file changes in every folder this listener shows, and the decision hub
+  if (p === "/_/events") {
+    let c: StreamClient;
+    const stream = new ReadableStream<Uint8Array>({
+      start(ctrl) { c = { ctrl, scope }; allClients.add(c); ctrl.enqueue(enc.encode(`retry: 2000\n: hello\n\n`)); },
+      cancel() { allClients.delete(c); },
+    });
+    req.signal.addEventListener("abort", () => allClients.delete(c));
+    return new Response(stream, { headers: { ...SEC_HEADERS, "Content-Type": "text/event-stream", Connection: "keep-alive" } });
+  }
+  if (p === "/_/part/recent") {
+    const { sort } = sortFrom(req, url);
+    return new Response(renderRecent(scope, null, ""), { headers: HTML });
+  }
+  if (p.startsWith("/decisions/part/")) return dec.part(url, scope, !!answerBy(who)) ?? notFound();
+  {
+    const f = dec.pageFilter(url, scope);
+    if (f) { // the app, with the Decisions tab open
+      const nonce = randomBytes(16).toString("base64");
+      const q = new URLSearchParams({ status: f.status, ...(f.urgent ? { urgent: "1" } : {}), ...(f.project ? { project: f.project } : {}) }).toString();
+      const { sort } = sortFrom(req, url);
+      return new Response(decisionsPage(scope, q, dec.pane(scope, f, !!answerBy(who)), nonce, sort), { headers: { ...HTML, "Content-Security-Policy": pageCsp(nonce) } });
+    }
   }
 
   // /r/<root>/<action>/<path>
@@ -1433,7 +1101,7 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
 
   if (rest === "/part/tree") {
     const { sort } = sortFrom(req, url);
-    return new Response(renderSidebar(root, url.searchParams.get("current") ?? "", sort), { headers: HTML });
+    return new Response(renderTree(root, url.searchParams.get("current") ?? "", sort), { headers: HTML });
   }
 
   const am = /^\/(view|raw|part\/main|part\/status)\/(.+)$/.exec(rest);
@@ -1457,7 +1125,9 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
     const type = MIME[ext] ?? "text/plain; charset=utf-8";
     const framed = (ext === "html" || ext === "htm") && inOurFrame;
     const acfg = framed ? answersFor.get(root.name) : undefined;
-    const inject = framed ? FRAME_LINKS + frameState(!!acfg) + (acfg ? frameAnswers(recentAnswers(root, acfg)) : "") : "";
+    const hubOn = framed && !acfg && Object.keys(hub.counts([root.name])).length > 0; // explainers in a hub-only folder
+    const recent = acfg ? recentAnswers(root, acfg) : hubOn ? safeJson(hub.recentAnswers(root.name, new Date(Date.now() - 48 * 3600_000).toISOString())) : "";
+    const inject = framed ? FRAME_LINKS + frameState(!!acfg || hubOn) + (acfg || hubOn ? frameAnswers(recent) : "") : "";
     return new Response(framed ? Buffer.concat([await readFile(f.abs), Buffer.from(inject)]) : Bun.file(f.abs), {
       headers: {
         ...SEC_HEADERS,

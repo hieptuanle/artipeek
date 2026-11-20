@@ -46,21 +46,29 @@ platform :ios do
 
   # The App Store Connect app record must exist before the first upload. The API key can't create one (Apple only
   # allows that with an Apple ID login), so this stops with the steps when it is missing.
-  desc "Register the App ID (bundle id) with Push Notifications in the developer portal, if missing"
+  desc "Register the App IDs (app with Push Notifications, its notification extension, Watch app, complication), if missing"
   lane :app_id do
     api_key
-    id = Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
-    unless id
-      id = Spaceship::ConnectAPI::BundleId.create(name: "artipeek", platform: "IOS", identifier: BUNDLE_ID)
-      UI.success("App ID #{BUNDLE_ID} registered")
-    end
-    caps = id.get_capabilities.map(&:capability_type)
     push = Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
-    unless caps.include?(push)
-      id.create_capability(push)
-      UI.success("Push Notifications enabled on #{BUNDLE_ID}")
+    {
+      BUNDLE_ID => ["artipeek", "IOS"],
+      "#{BUNDLE_ID}.notify" => ["artipeek notifications", "IOS"],
+      "#{BUNDLE_ID}.watchkitapp" => ["artipeek Watch", "IOS"],
+      "#{BUNDLE_ID}.watchkitapp.widgets" => ["artipeek Watch complication", "IOS"],
+    }.each do |identifier, (name, platform)|
+      id = Spaceship::ConnectAPI::BundleId.find(identifier)
+      unless id
+        id = Spaceship::ConnectAPI::BundleId.create(name: name, platform: platform, identifier: identifier)
+        UI.success("App ID #{identifier} registered")
+      end
+      next unless identifier == BUNDLE_ID
+      caps = id.get_capabilities.map(&:capability_type)
+      unless caps.include?(push)
+        id.create_capability(push)
+        UI.success("Push Notifications enabled on #{identifier}")
+      end
     end
-    UI.success("App ID #{BUNDLE_ID}: #{(caps | [push]).join(', ')}")
+    UI.success("App IDs ready")
   end
 
   desc "Check that the App Store Connect app record exists (the first upload needs it)"

@@ -5,11 +5,12 @@ options:
   bundleIdPrefix: com.example
   deploymentTarget:
     iOS: "17.0"
+    watchOS: "10.0"
   createIntermediateGroups: true
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "1.1"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -19,6 +20,10 @@ targets:
     platform: iOS
     sources:
       - path: Artipeek
+      - path: Shared
+    dependencies:
+      - target: ArtipeekNotify
+      - target: ArtipeekWatch
     configFiles:
       Debug: Config/App.xcconfig
       Release: Config/App.xcconfig
@@ -53,6 +58,88 @@ targets:
       path: Artipeek/Artipeek.entitlements
       properties:
         aps-environment: development
+  # Runs before a push shows: buttons with the options' labels (see ArtipeekNotify/NotificationService.swift).
+  ArtipeekNotify:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ArtipeekNotify
+      - path: Shared/Categories.swift
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ARTIPEEK_BUNDLE_ID).notify
+    info:
+      path: ArtipeekNotify/Info.plist
+      properties:
+        CFBundleDisplayName: artipeek
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+
+  # The Watch app (embedded in the iPhone app; installs on the paired Watch).
+  ArtipeekWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: ArtipeekWatch
+      - path: Shared/ArtipeekAPI.swift
+    dependencies:
+      - target: ArtipeekWatchWidgets
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ARTIPEEK_BUNDLE_ID).watchkitapp
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: ArtipeekWatch/Info.plist
+      properties:
+        CFBundleDisplayName: artipeek
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: $(ARTIPEEK_BUNDLE_ID)
+        ArtipeekKeychainGroup: $(AppIdentifierPrefix)$(ARTIPEEK_BUNDLE_ID).watch
+    entitlements:
+      path: ArtipeekWatch/ArtipeekWatch.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)$(ARTIPEEK_BUNDLE_ID).watch
+
+  # Complication: open and urgent counts.
+  ArtipeekWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: ArtipeekWatchWidgets
+      - path: Shared/ArtipeekAPI.swift
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ARTIPEEK_BUNDLE_ID).watchkitapp.widgets
+    info:
+      path: ArtipeekWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: artipeek
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ArtipeekKeychainGroup: $(AppIdentifierPrefix)$(ARTIPEEK_BUNDLE_ID).watch
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: ArtipeekWatchWidgets/ArtipeekWatchWidgets.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)$(ARTIPEEK_BUNDLE_ID).watch
+
   ArtipeekTests:
     type: bundle.unit-test
     platform: iOS

@@ -169,6 +169,7 @@ final class AppModel: ObservableObject {
     func signOut() async {
         await unregister()
         await web.clearData()
+        LoginSync.clear()
         try? await UNUserNotificationCenter.current().setBadgeCount(0)
         pushStatus = ""
         web.loadStart()

@@ -158,7 +158,10 @@ final class WebController: NSObject, ObservableObject {
             let gear = (try? await wv.evaluateJavaScript("!!document.getElementById('artipeek-app-settings')")) as? Bool
             print("artipeek-debug: page \(wv.url?.absoluteString ?? "-") artipeek=\(isApp) gear=\(gear ?? false)")
             #endif
-            if isApp { model.pageReady() } else if isAccess(wv.url) { model.loginShown() }
+            if isApp {
+                model.pageReady()
+                if let server = model.server { await LoginSync.refresh(server: server, store: wv.configuration.websiteDataStore.httpCookieStore) }
+            } else if isAccess(wv.url) { model.loginShown() }
         }
     }
 

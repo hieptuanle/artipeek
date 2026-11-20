@@ -28,6 +28,28 @@ Native parts:
   answer sheet, downloads (to the share sheet), pull to refresh, dark mode. Links to other sites open in a Safari
   sheet; same-site new windows (e.g. "raw") in a sheet of their own.
 
+- **Answer buttons on a push**: a decision with one question and up to 4 options shows them as buttons (on the
+  iPhone, and on the Apple Watch while the phone is locked). A tap saves the answer in the background, with the login
+  copied from the web view to the Keychain, and a short "Saved: D4 → A" notification follows. **Reply…** takes a typed,
+  dictated or scribbled answer. `ArtipeekNotify` (a notification service extension) puts the option labels on the
+  buttons when the values aren't a usual set (A/B, A/B/C, A/B/C/D, Y/N have fixed letter buttons).
+
+## Apple Watch
+
+`ArtipeekWatch` is embedded in the iPhone app and installs on the paired Watch (Watch app → artipeek → Install, or
+automatically).
+
+- Open decisions, urgent first, with the time left. Tap one: the context, the options as buttons (the recommended one
+  green, with a star), one pick per question when there are several, or **Answer in words**. Every answer asks
+  "Send A?" first, then saves and goes back to the list.
+- The login: the iPhone app sends it (the Access cookie, over WatchConnectivity) after you log in there, and again when
+  it changes. The Watch then talks to the server itself, over Wi-Fi or cellular, also with the phone away. Sign out on
+  the iPhone signs the Watch out too. When the login runs out, open artipeek on the iPhone.
+- Complication (`ArtipeekWatchWidgets`): open and urgent counts (circular, corner, inline), or the counts and the first
+  urgent decision (rectangular). It refreshes every 15 minutes and whenever the Watch app does.
+- The Watch app and the complication share the login through a keychain group of the team
+  (`<team>.<bundle id>.watch`); no App Group needed.
+
 No analytics, no third-party code.
 
 ## Build
@@ -51,7 +73,7 @@ The app icon is artipeek's `assets/icon.svg`: `scripts/make-icon.sh` renders it.
 | `fastlane device` | Development build installed and started on an iPhone over the network (`xcrun devicectl`; `device_name:"…"` or `device_id:"…"`). It registers as a `sandbox` push token. |
 | `fastlane test` | Unit tests on a simulator. |
 | `fastlane testers` | Makes sure the app's internal TestFlight group exists (every build) and adds `TESTFLIGHT_TESTERS` from `fastlane/.env`. Apple refuses the API for someone who is already an email-invited tester of another app: then add them once in App Store Connect (TestFlight → Internal → Testers → +). `beta` runs it when the variable is set. |
-| `fastlane app_id` | Registers the bundle id with Push Notifications in the developer portal, if missing. |
+| `fastlane app_id` | Registers the App IDs in the developer portal, if missing: the app (with Push Notifications), `.notify`, `.watchkitapp`, `.watchkitapp.widgets`. |
 | `fastlane app_record` | Checks the App Store Connect app record. Apple lets only an Apple ID login create it (App Store Connect → Apps → + → New App, with the bundle id); the API key can't. |
 
 The first upload also needs the app record; after that, `fastlane beta` alone. Internal testers of the team see a new
@@ -67,4 +89,6 @@ each push to that token's environment.
 
 DEBUG builds take two launch arguments: `-openPath /r/<folder>/decisions#d:<folder>:<id>` opens a page as a tapped push
 would, `-showSettings 1` opens the settings. `-serverURL http://127.0.0.1:4321` points a simulator at a local server
-(push registration is refused there: it needs a login or an answer device, like answers).
+(push registration is refused there: it needs a login or an answer device, like answers). The Watch app takes
+`-serverURL` too (instead of the iPhone's login; point it at a local proxy that adds an Access token),
+`-openDecision <folder>/<id>`, and `-autoAnswer A` (sends that answer on the opened decision).

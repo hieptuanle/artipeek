@@ -2,6 +2,7 @@
 //   /decisions, /r/<project>/decisions      the app with the Decisions tab open (project filter set by the second)
 //   /decisions/part/page                    the tab's content (filters, list, outline)
 //   /decisions/part/list, /part/card/<project>/<id>, /part/counts    fragments, a page of 30 at a time
+//   /decisions/part/app.json                 open decisions as JSON, for the Watch app
 //   /api/decisions/<project>[/<id>[/notes]], /api/answers/<project>   agents, with the project's token
 // Live changes go out through artipeek's one stream (/_/events), via deps.broadcast.
 // The API is never on the public listener. Agents create and change decisions; only the person (artipeek's own
@@ -204,6 +205,27 @@ export function createDecisionsWeb(deps: Deps) {
     };
   }
 
+  // The Watch app's list: open decisions this listener shows, urgent first (nearest deadline first), then oldest first.
+  // Plain text only (the Watch shows no HTML); context cut short. Read-only, same login as the page.
+  function appList(scope: Scope) {
+    const now = Date.now();
+    const list = hub.list({ projects: projectsIn(scope), statuses: ["open"], limit: 200 });
+    const plain = (m: string) => m.replace(/```[\s\S]*?```/g, "").replace(/[*_`#>]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\n{3,}/g, "\n\n").trim();
+    const items = list.map((d) => {
+      const last = d.answers.find((x) => x.kind === "answer");
+      return {
+        project: d.project, id: d.id, title: d.title, lane: d.lane, urgent: isUrgent(d, now), flagged: d.urgent,
+        deadline: d.deadline, createdAt: d.createdAt, context: plain(d.context).slice(0, 600), ifNoAnswer: d.ifNoAnswer,
+        questions: d.questions.map((q) => ({ key: q.key ?? "", text: q.text ?? "", options: q.options.map((o) => ({ value: o.value, label: o.label, recommended: !!o.recommended })) })),
+        lastAnswer: last ? { text: last.text, at: last.at } : null,
+        url: `/r/${encodeURIComponent(d.project)}/decisions#${domId(d.project, d.id)}`,
+      };
+    });
+    const dl = (x: { deadline: string | null }) => (x.deadline ? Date.parse(x.deadline) : Infinity);
+    items.sort((x, y) => Number(y.urgent) - Number(x.urgent) || (x.urgent ? dl(x) - dl(y) : 0) || x.createdAt.localeCompare(y.createdAt));
+    return { open: items.length, urgent: items.filter((x) => x.urgent).length, decisions: items.slice(0, 50) };
+  }
+
   // The Decisions tab's content. Inside the app shell, or fetched by the app for a tab.
   function pane(scope: Scope, f: Filter, canAnswer: boolean): string {
     const part = listPart(scope, f);
@@ -318,6 +340,7 @@ export function createDecisionsWeb(deps: Deps) {
       return json(200, listPart(scope, f, offset, limit));
     }
     if (p === "/decisions/part/counts") return json(200, { counts: counts(scope) });
+    if (p === "/decisions/part/app.json") return json(200, appList(scope));
     const m = /^\/decisions\/part\/card\/([^/]+)\/([^/]+)$/.exec(p);
     if (m) {
       let name: string, id: string;

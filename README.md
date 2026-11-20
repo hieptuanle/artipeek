@@ -218,7 +218,8 @@ artipeek logs -f | restart | test | undo-config
   file inside the folder (no symlinks out) and commits only that file. The answer text is never logged.
   The decision hub's agent API (`/api/…`) also writes: it needs the folder's token (stored hashed) on every call, even
   from 127.0.0.1, is not on the public listener, and can't answer. Agent text is Markdown without raw HTML.
-  `POST /_/push/…` (the iOS app's device registration) follows the answer rules (see "iOS app and push").
+  `POST /_/push/…` (the iOS app's device registration) follows the answer rules (see "iOS app and push"). The iOS and
+  Watch apps send answers natively: the same headers, with the Access login cookie instead of a browser's.
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
 - **Browser**: strict Content-Security-Policy (only the server's own small script runs; no remote images, fonts or scripts). Raw files get `CSP: sandbox` (opaque origin, no network). `.html` gets `allow-scripts` with inline scripts only when the browser loads it in artipeek's own file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`); that page's `frame-src 'self'` keeps the frame from navigating away. Never `allow-same-origin`.
@@ -293,6 +294,14 @@ open decisions the device can see; `thread-id` is the folder; custom data `{proj
   or a device in `answerDevices` (never plain 127.0.0.1, never an agent token), `Sec-Fetch-Site: same-origin`, an
   `X-Artipeek: push` header and a JSON body. The app sends them from its web view, so they carry the page's login.
 - A device registered through the public listener only hears about `public.roots`, and its badge counts only those.
+- **Answer buttons**: a decision with one question and up to 4 options gets them in the text, and as buttons: letters
+  for the usual sets (A/B, A/B/C, A/B/C/D, Y/N), which the Apple Watch shows too, or the labels (the app's notification
+  extension makes those for other sets). Other decisions get **Reply…** (type, dictate or scribble an answer) and
+  **Open**. A tap saves at once, through the same `POST /r/<folder>/answer` as the page, with the login (source
+  `artipeek:push`); the app then shows "Saved: D4 → A". Buttons work only while the phone (or the Watch) is unlocked.
+- **Apple Watch app**: open decisions, urgent first; tap one, tap an answer, confirm (source `artipeek:watch`). A
+  complication shows the open and urgent counts. It reads `GET /decisions/part/app.json` (the open decisions this login
+  can see, as JSON; read-only) with the login the iPhone app passes to it.
 - Each token keeps its APNs environment (a development build: sandbox; TestFlight: production). A token APNs calls
   gone (410, `BadDeviceToken`) is dropped; the app registers again when it next opens.
 - `origin` (in `apns`) exists only for the tests (a fake APNs). Do not set it in a real config.

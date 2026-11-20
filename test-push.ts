@@ -196,6 +196,37 @@ try {
   h0.sqlite.close();
   ok(marked?.sent === 1 && got.some((g) => g.token === FLAKY), "a 503 for one device doesn't drop it, and the push still counts for the device that got it");
 
+  // ----- answer buttons on the push -----
+  got = [];
+  r = await api("POST", "/api/decisions/one", { title: "Ship on Friday?", questions: [{ options: [{ value: "A", label: "Ship Friday", recommended: true }, { value: "B", label: "Wait a week" }] }] });
+  const abId = r.j.id;
+  await api("POST", "/api/decisions/one", { title: "Pick a colour", questions: [{ options: [{ value: "R", label: "red" }, { value: "G", label: "green" }] }] });
+  await api("POST", "/api/decisions/one", { title: "Two questions", questions: [{ key: "Q1", options: [{ value: "A", label: "a" }] }, { key: "Q2", options: [{ value: "A", label: "a" }] }] });
+  await wait();
+  const byTitle = (t: string) => forGood().find((g) => g.body.aps.alert.body.startsWith(t))?.body;
+  const ab = byTitle("Ship on Friday?"), rg = byTitle("Pick a colour"), two = byTitle("Two questions");
+  ok(ab?.aps?.category === "artipeek.opts.AB" && ab?.aps?.["mutable-content"] === 1 && ab?.options?.length === 2 && ab.options[0].recommended === true,
+    `one question, options A/B: the fixed A/B button category, mutable for the app's extension, options in the data (${ab?.aps?.category})`);
+  ok(ab?.aps?.alert?.body === "Ship on Friday?\nA ★ Ship Friday\nB Wait a week", "…and the options in the text (the Watch shows them)");
+  ok(rg?.aps?.category === "artipeek.reply" && rg?.options?.length === 2, "other option values: reply category, options still in the data (the extension makes the buttons)");
+  ok(two?.aps?.category === "artipeek.reply" && !two?.options && two?.aps?.alert?.body === "Two questions", "several questions: reply only, no options");
+
+  // the Watch app's list (same login as the page; read-only)
+  const lr = await fetch(`${B}/decisions/part/app.json`, { headers: { "Cf-Access-Jwt-Assertion": jwt } });
+  const lj = await lr.json() as any;
+  ok(lr.status === 200 && lj.decisions.length === lj.open && lj.decisions[0].urgent && lj.urgent >= 2, `Watch list: open decisions, urgent first (${lj.open} open, ${lj.urgent} urgent)`);
+  ok(lj.decisions.every((d: any) => d.project === "one"), "…only the folders of this listener");
+  ok((await fetch(`${B}/decisions/part/app.json`)).status === 403, "…and only with a login");
+
+  // an answer from a push button or the Watch: a native request with the login cookie and artipeek's headers
+  const ans = await fetch(`${B}/r/one/answer`, { method: "POST", headers: { Cookie: `CF_Authorization=${jwt}`, "Content-Type": "application/json", "X-Artipeek": "answer", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ id: abId, text: "A", page: "artipeek:watch" }) });
+  const hA = openHub(dbFile);
+  const row = hA.sqlite.query("SELECT a.page, a.by, d.status FROM decision_answers a JOIN decisions d ON d.project = a.project AND d.id = a.decision_id WHERE a.project = 'one' AND a.decision_id = ?").get(abId) as any;
+  hA.sqlite.close();
+  ok(ans.status === 200 && row?.page === "artipeek:watch" && row?.by === "user@example.com" && row?.status === "answered", "an answer from the Watch is saved as the person's, marked as sent from the Watch");
+  const agent = await fetch(`${L}/r/one/answer`, { method: "POST", headers: { Authorization: `Bearer ${TOK.one}`, "Content-Type": "application/json", "X-Artipeek": "answer", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ id: abId, text: "B", page: "artipeek:watch" }) });
+  ok(agent.status === 403, "…and an agent still can't answer");
+
   // ----- test push and unregister -----
   got = [];
   r = await push(B, "test", { token: GOOD }, { ...page, "Cf-Access-Jwt-Assertion": jwt });

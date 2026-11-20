@@ -1162,6 +1162,7 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
 
 // ---------- answers ----------
 const ANSWER_ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,31}$/;
+const APP_PAGES = new Set(["artipeek:decisions", "artipeek:push", "artipeek:watch"]);
 const ANSWER_DEVICES = new Set((config0.answerDevices ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean));
 const answerQueue = new Map<string, Promise<unknown>>();
 const jsonRes = (status: number, o: unknown) => new Response(JSON.stringify(o), { status, headers: { ...SEC_HEADERS, "Content-Type": "application/json" } });
@@ -1195,7 +1196,9 @@ async function answer(req: Request, rawName: string, scope: Scope, who: Who): Pr
   const kind = b?.kind === "explain" ? "explain" : "answer";
   if (kind === "explain" && !inHub) return jsonRes(400, { ok: false, error: "explainer requests are for decisions in the hub" });
   if (kind === "explain" && !/^EXPLAIN:/.test(text)) text = `EXPLAIN: ${text}`.slice(0, 2000);
-  const page = b?.page === "artipeek:decisions" ? "artipeek:decisions" : typeof b?.page === "string" && b.page.length <= 400 ? root.resolve(b.page)?.rel ?? "" : "";
+  // where it was sent from: the decisions page, a button on a push, the Watch app (both native: they send the login cookie
+  // and these same headers), or a file of the folder
+  const page = APP_PAGES.has(b?.page) ? b.page : typeof b?.page === "string" && b.page.length <= 400 ? root.resolve(b.page)?.rel ?? "" : "";
   const rec: Record<string, string> = { at: new Date().toISOString(), uid: randomBytes(6).toString("hex"), id, text, by, page, ...(kind === "explain" ? { kind } : {}) };
   if (inHub) {
     try { hub.recordAnswer({ uid: rec.uid, project: root.name, decisionId: id, at: rec.at, by, kind, text, page }); }

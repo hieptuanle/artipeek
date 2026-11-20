@@ -25,6 +25,8 @@ type Deps = {
 export const FRESH_MS = 15 * 60_000; // a change newer than this is news
 export const DEADLINE_GRACE_MS = 6 * 3600_000; // a deadline that crossed the 24 h line this recently still counts
 const URGENT_MS = 24 * 3600_000;
+export const MAX_OPTIONS = 4; // buttons on a push (the Watch shows four well)
+const STATIC_CATEGORIES = new Set(["AB", "ABC", "ABCD", "YN"]); // must match the iOS app's fixed categories
 const TOKEN_RE = /^[0-9a-f]{32,200}$/;
 const BUNDLE_RE = /^[A-Za-z0-9.-]{1,155}$/;
 const short = (t: string) => t.slice(0, 8) + "…";
@@ -66,9 +68,9 @@ export function createPush(deps: Deps) {
   }
 
   // ----- triggers -----
-  type Row = { project: string; id: string; title: string; urgent: number; deadline: string | null; createdAt: string; updatedAt: string; newAt: string | null; urgAt: string | null };
+  type Row = { project: string; id: string; title: string; questions: string | null; urgent: number; deadline: string | null; createdAt: string; updatedAt: string; newAt: string | null; urgAt: string | null };
   function pending(): Row[] {
-    return hub.sqlite.query(`SELECT d.project, d.id, d.title, d.urgent, d.deadline, d.created_at AS createdAt, d.updated_at AS updatedAt, n.at AS newAt, u.at AS urgAt
+    return hub.sqlite.query(`SELECT d.project, d.id, d.title, d.questions, d.urgent, d.deadline, d.created_at AS createdAt, d.updated_at AS updatedAt, n.at AS newAt, u.at AS urgAt
       FROM decisions d
       LEFT JOIN push_sent n ON n.project = d.project AND n.decision_id = d.id AND n.kind = 'new'
       LEFT JOIN push_sent u ON u.project = d.project AND u.decision_id = d.id AND u.kind = 'urgent'
@@ -117,18 +119,35 @@ export function createPush(deps: Deps) {
     if (!apns) return Promise.resolve({ sent: 0, transient: 0 });
     const list = devices().filter((d) => deps.projectsFor(d.scope as DeviceScope).includes(r.project));
     const badge = new Map<string, number>();
+    const a = answerable(r);
     return sendTo(list, (d) => {
       if (d.bundle !== cfg!.bundleId) return null;
       const n = badge.get(d.scope) ?? openCount(d.scope as DeviceScope);
       badge.set(d.scope, n);
       return {
         payload: {
-          aps: { alert: { title: `${r.project} · ${r.id} · ${kind}`, body: r.title.slice(0, 240) }, sound: "default", badge: n, "thread-id": r.project },
+          aps: { alert: { title: `${r.project} · ${r.id} · ${kind}`, body: a.body }, sound: "default", badge: n, "thread-id": r.project, category: a.category, "mutable-content": 1 },
           project: r.project, id: r.id, url: `/r/${encodeURIComponent(r.project)}/decisions#d:${r.project}:${r.id}`,
+          ...(a.options ? { options: a.options } : {}),
         },
         headers: Buffer.byteLength(`${r.project}:${r.id}`) <= 64 ? { "apns-collapse-id": `${r.project}:${r.id}` } : {},
       };
     });
+  }
+
+  // Answer buttons on the push (the iPhone, and the Watch when the phone is locked): a decision with one question and
+  // up to MAX_OPTIONS options gets them. The app's notification extension makes buttons with the labels; without it,
+  // a fixed category for the usual value sets (A/B, A/B/C, A/B/C/D, Y/N) still shows letter buttons, and the options are
+  // in the text. Anything else gets "Reply…" (type, dictate or scribble an answer) and "Open".
+  function answerable(r: Row): { body: string; category: string; options?: { value: string; label: string; recommended?: boolean }[] } {
+    let qs: { key?: string; options: { value: string; label: string; recommended?: boolean }[] }[] = [];
+    try { qs = JSON.parse(r.questions ?? "[]") ?? []; } catch {}
+    const title = r.title.slice(0, 240);
+    if (qs.length !== 1 || !qs[0].options?.length || qs[0].options.length > MAX_OPTIONS) return { body: title, category: "artipeek.reply" };
+    const options = qs[0].options.map((o) => ({ value: o.value, label: o.label.slice(0, 60), ...(o.recommended ? { recommended: true } : {}) }));
+    const values = options.map((o) => o.value).join("");
+    const body = [title, ...options.map((o) => `${o.value}${o.recommended ? " ★" : ""} ${o.label}`)].join("\n").slice(0, 700);
+    return { body, options, category: STATIC_CATEGORIES.has(values) ? `artipeek.opts.${values}` : "artipeek.reply" };
   }
 
   let timer: ReturnType<typeof setTimeout> | null = null;

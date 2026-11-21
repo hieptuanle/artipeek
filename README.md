@@ -350,20 +350,31 @@ To undo: delete the Access app, DNS record, and tunnel rule; revoke the API toke
 
 ## iOS app, Apple Watch and push (optional)
 
-[`ios/`](ios/README.md) contains a SwiftUI shell around artipeek's web UI (`WKWebView`), so web updates appear in the app immediately without rebuilding. Native features add push notifications, app icon badges, Cloudflare Access login, notification answer buttons, settings (server URL, notifications toggle, test push, sign out), and an Apple Watch companion app with a watch-face complication. See [`ios/README.md`](ios/README.md) for Xcode and TestFlight build steps.
+[`ios/`](ios/README.md) contains a SwiftUI shell around artipeek's web UI (`WKWebView`), so web updates appear in the app immediately without rebuilding. Native features add push notifications, app icon badges (open decisions + actions to do), Cloudflare Access login, notification answer buttons, an **Ask the agent to do it…** button on an action's push, settings (server URL, notifications toggle, test push, sign out), and an Apple Watch companion app (decisions and actions) with a watch-face complication. See [`ios/README.md`](ios/README.md) for Xcode and TestFlight build steps.
 
 <p>
-  <img src="docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline">
-  <img src="docs/screenshots/ios-push.png" width="200" alt="A push banner: my-project · D12 · urgent, with the decision's title">
-  <img src="docs/screenshots/ios-settings.png" width="200" alt="The app's settings: server, notifications on, send a test push, sign out">
+  <img src="docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline and a link to the action it led to (A14)">
+  <img src="docs/screenshots/ios-push.png" width="200" alt="A push banner: my-project · D12 · urgent, with the decision's title and its options">
+  <img src="docs/screenshots/ios-settings.png" width="200" alt="The app's settings: server, notifications on, send a test push, sign out; the badge counts open decisions and actions to do">
 </p>
 
-<img src="docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with the app's settings gear in its header">
+<p>
+  <img src="docs/screenshots/ios-actions.png" width="200" alt="The Actions tab in the app: A14, an urgent checklist from D12; step 1 verified by the agent, step 2 with a command and its Copy button">
+  <img src="docs/screenshots/ios-action-push.png" width="200" alt="An action's push, held open: my-project · A14 · action for you, 3 steps, with the buttons Ask the agent to do it… and Open">
+</p>
+
+<img src="docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with Decisions and Actions (2 to do, 1 urgent, 1 with the agent) and the app's settings gear in its header">
 
 <p>
   <img src="docs/screenshots/watch-list.png" width="160" alt="The Apple Watch app: 3 open, 1 urgent; the urgent decision first, with the time left">
   <img src="docs/screenshots/watch-decision.png" width="160" alt="A decision on the Watch: the recommended option in green with a star; tap, confirm, saved">
   <img src="docs/screenshots/watch-questions.png" width="160" alt="A decision with two questions on the Watch: one pick per question, then Send my answers">
+</p>
+
+<p>
+  <img src="docs/screenshots/watch-actions.png" width="160" alt="Below the decisions on the Watch: 2 actions to do, 1 urgent, with how many steps are ticked (1/3), then those with the agent">
+  <img src="docs/screenshots/watch-action.png" width="160" alt="An action on the Watch: urgent, 1/3 steps ticked, the deadline, from D12">
+  <img src="docs/screenshots/watch-steps.png" width="160" alt="Its steps on the Watch: step 1 verified by the agent; step 2 with where to run it and the whole command, to read; tap a step, confirm, ticked">
 </p>
 
 <sub>Screenshots use made-up demo folders.</sub>

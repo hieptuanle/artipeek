@@ -1,17 +1,22 @@
 # artipeek for iOS and Apple Watch
 
-A native SwiftUI shell around artipeek's own web UI, plus push notifications for decisions (with answer buttons), and
-an Apple Watch app to answer them on the go. The app shows the artipeek
-server in a `WKWebView`, so the Decisions tab, the file list, file tabs, answers and explainers are the web version's,
+A native SwiftUI shell around artipeek's own web UI, plus push notifications for decisions (with answer buttons) and
+actions, and an Apple Watch app to answer decisions and tick off actions on the go. The app shows the artipeek
+server in a `WKWebView`, so the Decisions and Actions tabs, the file list, file tabs, answers and explainers are the web version's,
 and a new web feature is in the app without an app update.
 
 <p>
-  <img src="../docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline">
-  <img src="../docs/screenshots/ios-push.png" width="200" alt="A push banner: my-project · D12 · urgent, with the decision's title">
-  <img src="../docs/screenshots/ios-settings.png" width="200" alt="The app's settings: server, notifications on, send a test push, sign out">
+  <img src="../docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline and a link to the action it led to (A14)">
+  <img src="../docs/screenshots/ios-push.png" width="200" alt="A push banner: my-project · D12 · urgent, with the decision's title and its options">
+  <img src="../docs/screenshots/ios-settings.png" width="200" alt="The app's settings: server, notifications on, send a test push, sign out; the badge counts open decisions and actions to do">
 </p>
 
-<img src="../docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with the app's settings gear in its header">
+<p>
+  <img src="../docs/screenshots/ios-actions.png" width="200" alt="The Actions tab in the app: A14, an urgent checklist from D12; step 1 verified by the agent, step 2 with a command and its Copy button">
+  <img src="../docs/screenshots/ios-action-push.png" width="200" alt="An action's push, held open: my-project · A14 · action for you, 3 steps, with the buttons Ask the agent to do it… and Open">
+</p>
+
+<img src="../docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with Decisions and Actions (2 to do, 1 urgent, 1 with the agent) and the app's settings gear in its header">
 
 <sub>Screenshots use made-up demo folders.</sub>
 
@@ -40,9 +45,15 @@ Native parts:
 ## Apple Watch
 
 <p>
-  <img src="../docs/screenshots/watch-list.png" width="160" alt="The Watch app: open decisions, urgent first">
-  <img src="../docs/screenshots/watch-decision.png" width="160" alt="A decision: options as buttons, the recommended one green">
-  <img src="../docs/screenshots/watch-questions.png" width="160" alt="Two questions: one pick each">
+  <img src="../docs/screenshots/watch-list.png" width="160" alt="The Apple Watch app: 3 open, 1 urgent; the urgent decision first, with the time left">
+  <img src="../docs/screenshots/watch-decision.png" width="160" alt="A decision on the Watch: the recommended option in green with a star; tap, confirm, saved">
+  <img src="../docs/screenshots/watch-questions.png" width="160" alt="A decision with two questions on the Watch: one pick per question, then Send my answers">
+</p>
+
+<p>
+  <img src="../docs/screenshots/watch-actions.png" width="160" alt="Below the decisions on the Watch: 2 actions to do, 1 urgent, with how many steps are ticked (1/3), then those with the agent">
+  <img src="../docs/screenshots/watch-action.png" width="160" alt="An action on the Watch: urgent, 1/3 steps ticked, the deadline, from D12">
+  <img src="../docs/screenshots/watch-steps.png" width="160" alt="Its steps on the Watch: step 1 verified by the agent; step 2 with where to run it and the whole command, to read; tap a step, confirm, ticked">
 </p>
 
 `ArtipeekWatch` is embedded in the iPhone app and installs on the paired Watch (Watch app → artipeek → Install, or

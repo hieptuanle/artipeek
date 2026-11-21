@@ -47,7 +47,7 @@ flowchart TB
   apns -.->|"push + quick buttons"| you
 ```
 
-Agents raise and update questions in the [Decision hub](#decision-hub), and hand-work checklists as [Actions](#actions), using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers. Only you can answer, via artipeek's confirm sheet (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
+Agents raise and update questions in the [Decision hub](#decision-hub), and hand-work checklists as [Actions](#actions), using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers or tick steps. Only you can answer or tick action steps, via artipeek's pages and confirm sheets (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
 
 ```mermaid
 sequenceDiagram
@@ -106,13 +106,13 @@ artipeek renders files on the server and streams live updates to your browser ov
 
 ### Navigation and layout
 
-- **Home (`/`)**: shows open and urgent decision counts per folder, followed by one card per folder with its 5 newest files.
+- **Home (`/`)**: shows open and urgent decision counts and to-do action counts per folder, followed by one card per folder with its 5 newest files.
 - **File page (`/r/<folder>/view/<path>`)**: shows the rendered file. On a phone, tap `☰` for the slide-in file list; on a laptop, the list stays docked on the left. In a folder with an agent, **edit** (next to **raw**) opens the [edit view](#edit-requests): your change goes to the agent, not into the file.
-- **In-app tabs**: clicking any link to a file inside artipeek (from the file list, Markdown, HTML pages, or Decisions) opens it in an in-app tab, or switches to it if already open. **Decisions** opens as a single tab.
+- **In-app tabs**: clicking any link to a file inside artipeek (from the file list, Markdown, HTML pages, Decisions, or Actions) opens it in an in-app tab, or switches to it if already open. **Decisions** and **Actions** each open as a single tab.
   - Hidden tabs stay mounted with their scroll position intact, switch instantly, and keep updating live.
   - Each browser tab keeps its own tab list in `sessionStorage` (persisting across reloads) and spans all folders.
   - Browser Back and Forward step through your tab history. Close a tab with `×` or middle-click; Ctrl/Cmd-click opens a normal browser tab. The tab bar appears once two or more tabs are open.
-- **File list**: **Decisions** (open and urgent counts) sits at the top, followed by **Recent** (the 10 newest files across all folders, labeled by folder), then each folder. Folder contents load on demand; the active tab's folder and any folders you open stay expanded. Sort by **Name** or **Modified** (newest first; a folder's timestamp matches its newest file; choice saved in a cookie), or filter across every folder.
+- **File list**: **Decisions** and **Actions** (with live counts) sit at the top, followed by **Recent** (the 10 newest files across all folders, labeled by folder), then each folder. Folder contents load on demand; the active tab's folder and any folders you open stay expanded. Sort by **Name** or **Modified** (newest first; a folder's timestamp matches its newest file; choice saved in a cookie), or filter across every folder.
 - **Single live stream**: each browser tab opens one SSE stream (`/_/events`) for all folders and decisions, keeping multiple browser tabs under browser connection limits.
 
 ### File rendering
@@ -188,16 +188,57 @@ Spotted something to change in a file an agent wrote? Tap **edit** next to **raw
 
 ## Actions
 
-Some answers leave **you** with work only you can do: run a script on a server after 22:00, post a notice, reconnect an account. Agents raise these as **actions**: cards on the **Actions** tab (`/actions`, `/r/<folder>/actions`, under Decisions in the file list, with counts; the home page has a card too), each a checklist of steps.
+Answering a decision often leaves **you** with hand steps only you can perform—running a migration script on `db-server` after 22:00, rotating a secret, or reconnecting an account. Without a home for them, those steps lived only in an agent's chat: the agent said work was still pending while the Decisions tab showed nothing open.
 
-- **Steps** say plainly what to do, where (machine, time), with links; a command to paste has a **Copy** button.
-- **Tick** each step as you go, or press **I've done all the steps** (with an optional note). Or press **Ask the agent to do it**: every action has it, and the agent tells you on the card if it can't.
-- **The agent checks**: ticked steps show *the agent is checking it*, then **✓ Verified** (with what it saw) or **Verify skipped** (it couldn't check). It can send a step back ("not done yet: …"). When every step is verified or skipped, it marks the action **done** and moves on (relays the answer, raises the next decision).
-- **Filters**: To do, With the agent (asked or checking), Done, All; Urgent; per project. Live, like the Decisions tab. An action that came out of a decision links both ways (D317 ↔ A3).
-- **How the agent hears it**: like an answer, with `"kind": "action"`, `"page": "artipeek:actions"` and a text starting with `ACTION:` (answers file + commit + `after` in folders with `answers` set; always `artipeek-decide answers`). Ticks are batched: artipeek waits a minute after the last one, so five ticks make one line and one commit, and a slip unticked within that minute never reaches the agent. Ticking the last step, "all done" and "ask the agent" go out at once.
-- **Who**: only you, under the same rules as answers. Agents raise and close actions with their token (`artipeek-decide action …`), never tick for you. A new action is pushed to the iOS app (buttons **Ask the agent to do it…** and **Open**; a tap opens it). The Apple Watch app lists actions too: tick a step, all done, ask the agent.
+**Actions** give hand steps their own checklist cards on the **Actions** tab (`/actions`, `/r/<folder>/actions`, right under Decisions in the file list with live counts, plus a card on the home page). Each step explains what to do, where/when to run it, any reference links, and an optional copy-pasteable command with a **Copy** button. An action raised from a decision links both ways (`D12` ↔ `A1`).
 
-See [docs/decisions-for-agents.md](docs/decisions-for-agents.md#actions-work-only-the-person-can-do) for the agent side.
+<img src="docs/screenshots/desktop-actions-tick.webp" alt="The Actions tab on desktop: an urgent half-done action (A1 from D12) with a verified step, a checking step, a step with a command and Copy button, and the outline on the right. Ticking step 3 moves it live from ticked to checking to verified">
+
+<p>
+  <img src="docs/screenshots/phone-actions-dark.png" width="220" alt="The Actions tab on a phone in dark mode showing verified, checking, and to-do steps with a Copy button and floating Outline button">
+</p>
+
+<sub>Screenshots use made-up demo folders.</sub>
+
+### How a round goes
+
+```mermaid
+sequenceDiagram
+  participant A as AI agent
+  participant R as Desk repo
+  participant S as artipeek + Hub
+  participant U as You
+
+  A->>S: Raise action A3 (from D317)
+  S-->>U: Live SSE update (+ iOS push)
+  U->>S: Tick step 1, then step 2
+  Note over S: Waits 1 min (batches ticks; slips can be unticked)
+  S-->>R: Append 1 ACTION line + commit + after
+  S-->>U: Steps flip to "the agent is checking it"
+  A->>S: Read signal (artipeek-decide answers)
+  A->>S: Verify each step (verified / verify skipped / back to todo)
+  A->>S: Mark A3 done & move on
+  S-->>U: Live SSE update on Actions tab
+```
+
+- **Working the checklist**: tick steps as you go, press **I've done all the steps** (with an optional note), or press **Ask the agent to do it**—every action has it, and the agent either completes the steps for you or hands the card back with a reason.
+- **1-minute tick batching**: ticks do not fire immediately one by one. artipeek waits **1 minute** after your last tick (up to 5 minutes after the first) before notifying the agent, so an accidental click can be unticked before it ever leaves artipeek, and ticking five steps in a row produces one `ACTION:` line, one git commit, and one `after` run. Ticking the final step, **I've done all the steps**, and **Ask the agent to do it** go out immediately.
+- **Filters & permissions**: filter by **To do**, **With the agent** (asked or checking), **Done**, **All**, **Urgent**, and project, with live SSE updates and an outline just like Decisions. Only you can tick steps or hand an action to the agent (same rules as answers: Cloudflare Access login or `answerDevices`, never plain `127.0.0.1`). Agents raise, verify, and close actions with their folder token (`artipeek-decide action …`) and receive signals via `artipeek-decide answers` (`kind: "action"`, `ACTION: …`) and the folder's answers file. A new action is pushed to the iOS app (buttons **Ask the agent to do it…** and **Open**; a tap opens it). The Apple Watch app lists actions too: tick a step, all done, ask the agent.
+
+| Level | Shown on the page | Meaning |
+|---|---|---|
+| **Action** | **to do** | Open; at least one step is still left for you. |
+| **Action** | **asked the agent** | You pressed *Ask the agent to do it*; the agent is trying it or will hand it back. |
+| **Action** | **checking** | Every step is ticked; waiting for the agent to finish verifying and close it. |
+| **Action** | **done** | All steps verified (or skipped) and closed by the agent. |
+| **Action** | **withdrawn** | Dropped by the agent as no longer needed. |
+| **Step** | *Ticked…* | You ticked it; waits ~1 minute so you can untick a slip before the agent hears it. |
+| **Step** | **the agent is checking it** | Sent to the agent to verify (you can still untick if it wasn't done after all). |
+| **Step** | **✓ Verified** | Agent confirmed it (with what it saw); checkbox locked. |
+| **Step** | **Verify skipped** | Agent couldn't check it directly (e.g. an external dashboard); checkbox locked. |
+| **Step** | **Not done yet** | Agent checked and sent the step back to you with a note on what's still missing. |
+
+See [docs/decisions-for-agents.md](docs/decisions-for-agents.md#actions-work-only-the-person-can-do) for the agent CLI, states, and HTTP API.
 
 ## Answer buttons (optional)
 
@@ -311,6 +352,7 @@ artipeek assumes agent-written files may be untrusted and enforces strict bounda
   - Decision hub agent API (`/api/…`): requires the folder's hashed bearer token on every call (even from `127.0.0.1`), is disabled on the public listener, and cannot submit answers. Agent text is Markdown with raw HTML disabled.
   - Push registration (`POST /_/push/…`): enforces the same caller, origin, and JSON checks as answers, with `X-Artipeek: push`.
   - Edit requests (`POST /r/<folder>/edit`, folders with an agent): the same caller, origin, and JSON checks as answers, with `X-Artipeek: edit` and a body under 1.5 MB. It never writes the file: it stores the request in the hub and, with `answers` set, appends one line to the answers file and commits only that file. File text is never logged.
+  - Actions (`POST /r/<folder>/action`): the same caller, origin, and JSON checks as answers, with `X-Artipeek: action`. Only you can tick steps or ask the agent to do an action; agents manage actions through `/api/actions/…` with their folder token.
 - **Network listeners**: listens only on `127.0.0.1` and, when `tailnet` is `true`, the machine's Tailscale IP (checked every 15 s to follow tailnet changes). Never listens on Wi-Fi/LAN. Public access goes only through a Cloudflare Tunnel to the separate `public` listener, which requires Cloudflare Access.
 - **Tailscale device check**: every tailnet request is verified via `tailscale whois` and served only if the peer matches `<host>.<tailnet>` with `host` in `allowDevices` and `tailnet` in `tailnets`. All other tailnet requests return `403` and log one line (IP, device name, path—never file contents). `127.0.0.1` is always served.
 - **Browser isolation**: strict Content-Security-Policy allows only the server's own small script and blocks remote images, fonts, and scripts. Raw files receive `CSP: sandbox` (opaque origin, no network). `.html` files get `allow-scripts` for inline scripts only when framed inside artipeek's file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`), where `frame-src 'self'` prevents navigating away; `allow-same-origin` is never set.

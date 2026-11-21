@@ -186,7 +186,8 @@ artipeek-decide action add --title "Reconnect TikTok ads" --step "Open Business 
 ### States
 
 A step: `todo` → `done` (the person ticked it) → `checking` (you've been told; verify it) → `verified`, or `skipped`
-(you couldn't verify it). You can send a step back to `todo` with a note ("not done: the table still has old rows").
+(you couldn't verify it). You can send a step back to `todo` with a required note ("not done: the table still has old
+rows"), which also moves a `checking` action back to `open`. You can also update a step's `checking` note while working.
 The person can untick `done` and `checking` steps, not `verified`/`skipped` ones.
 
 The action: `open` (some step still to do) → `checking` (every step ticked) → `done` (you close it). `agent`: the person
@@ -226,8 +227,9 @@ artipeek-decide actions [--status all]                # open, agent and checking
 2. When every step is `verified` or `skipped`: `action done`, then decide what comes next: relay to your hub, update or
    close the decision it came from, raise a new decision or action.
 3. On "do it for me": try it. Mark the steps you did `verified`, then `action done`; or `action handback` with why.
-4. `action update A3 --file a.json` changes the title, context, steps… A step keeps its state while its text stays the
-   same at the same place; a ticked step can't be changed or dropped (add a new step instead).
+4. `action update A3 --file a.json` (or quick flags like `--urgent`, `--deadline`, `--step`) changes the title, context,
+   steps… A step keeps its state while its text stays the same at the same place; a ticked step can't be changed or
+   dropped (add a new step instead). `action handback A3 "why"` also reopens a `done` or `withdrawn` action.
 
 Only the person ticks and asks (a login or an answer device, from artipeek's own page). Your token reads and writes
 the action, sets step states and closes it; it can't tick for the person.
@@ -244,7 +246,7 @@ hostname. Errors come back as `{"ok": false, "error": "…"}` with 400/401/404.
 | `GET /api/decisions/<folder>/<id>` | one |
 | `PATCH /api/decisions/<folder>/<id>` | change fields (`from`/`dependsOn` replace the list) |
 | `POST /api/decisions/<folder>/<id>/notes` | `{"body": "markdown", "kind": "update" \| "done"}` |
-| `GET /api/answers/<folder>?since=<ISO>` | what the person sent (answers, explainer requests, edit requests as kind `edit`, action ticks as kind `action`) |
+| `GET /api/answers/<folder>?since=<ISO>` | what the person sent (answers, explainer requests, edit requests as kind `edit`, action ticks as kind `action`; edit/action IDs appear in `decisionId`) |
 | `GET /api/edits/<folder>?status=pending` | edit requests (`pending` by default; `done`, `declined`, `superseded`, `withdrawn`, `all`) |
 | `GET /api/edits/<folder>/<id>` | one, with `diff`, `base` (the file as it was), `text` (the person's), `file` (where it is now) |
 | `PATCH /api/edits/<folder>/<id>` | `{"status": "done" \| "declined", "note": "…"}` (declined needs a note) |

@@ -7,7 +7,10 @@
 //   cross the 24 h line without a write). Each decision gets at most one "new" and one "urgent" push, recorded in
 //   push_sent, so a restart or a re-import never pushes again.
 // - Actions (checklists for the person) get one "new" push when raised (same push_sent table: ids are unique within a
-//   project across decisions and actions). No buttons: a tap opens the action.
+//   project across decisions and actions). Buttons (category artipeek.action, app 1.2): "Ask the agent…" (an optional
+//   note, then Send: the app posts op "agent" like the page) and "Open"; a tap opens the action.
+// - Badge: open decisions + actions to do (status open) the device can see. Actions with the agent don't count: they
+//   wait on the agent, not the person. The app (WebController.refreshBadge, the Watch's app.json "badge") counts the same.
 // - History never pushes: a decision first seen when it was raised (and last changed) more than FRESH_MS ago is marked
 //   as seen without a push. That covers imports, decisions from before push was set up, and long downtime.
 import { eq } from "drizzle-orm";
@@ -49,10 +52,10 @@ export function createPush(deps: Deps) {
     db.delete(s.pushDevices).where(eq(s.pushDevices.token, token)).run();
     console.log(`artipeek (push): device ${short(token)} dropped (${why})`);
   }
-  // How many open decisions a device of this scope sees: the app's badge.
-  function openCount(scope: DeviceScope): number {
+  // The app's badge for a device of this scope: open decisions + actions to do.
+  function badgeCount(scope: DeviceScope): number {
     const ps = deps.projectsFor(scope);
-    return ps.length ? hub.count({ projects: ps, statuses: ["open"] }) : 0;
+    return ps.length ? hub.count({ projects: ps, statuses: ["open"] }) + hub.actionCount({ projects: ps, statuses: ["open"] }) : 0;
   }
 
   async function sendTo(list: (typeof s.pushDevices.$inferSelect)[], build: (d: typeof s.pushDevices.$inferSelect) => { payload: unknown; headers?: Record<string, string> } | null) {
@@ -131,8 +134,8 @@ export function createPush(deps: Deps) {
     const list = devices().filter((d) => deps.projectsFor(d.scope as DeviceScope).includes(r.project));
     return sendTo(list, (d) => d.bundle !== cfg!.bundleId ? null : {
       payload: {
-        aps: { alert: { title: `${r.project} · ${r.id} · action for you`, body: `${r.title.slice(0, 240)}\n${r.steps} step${r.steps === 1 ? "" : "s"}` }, sound: "default", badge: openCount(d.scope as DeviceScope), "thread-id": r.project },
-        url: `/r/${encodeURIComponent(r.project)}/actions#a:${r.project}:${r.id}`,
+        aps: { alert: { title: `${r.project} · ${r.id} · action for you`, body: `${r.title.slice(0, 240)}\n${r.steps} step${r.steps === 1 ? "" : "s"}` }, sound: "default", badge: badgeCount(d.scope as DeviceScope), "thread-id": r.project, category: "artipeek.action" },
+        kind: "action", project: r.project, id: r.id, url: `/r/${encodeURIComponent(r.project)}/actions#a:${r.project}:${r.id}`,
       },
       headers: Buffer.byteLength(`${r.project}:${r.id}`) <= 64 ? { "apns-collapse-id": `${r.project}:${r.id}` } : {},
     });
@@ -145,7 +148,7 @@ export function createPush(deps: Deps) {
     const a = answerable(r);
     return sendTo(list, (d) => {
       if (d.bundle !== cfg!.bundleId) return null;
-      const n = badge.get(d.scope) ?? openCount(d.scope as DeviceScope);
+      const n = badge.get(d.scope) ?? badgeCount(d.scope as DeviceScope);
       badge.set(d.scope, n);
       return {
         payload: {
@@ -207,7 +210,7 @@ export function createPush(deps: Deps) {
       db.insert(s.pushDevices).values({ token, environment: env, bundle, name, by, scope, createdAt: at, lastSeenAt: at })
         .onConflictDoUpdate({ target: s.pushDevices.token, set: { environment: env, bundle, name, by, scope, lastSeenAt: at } }).run();
       if (!known) console.log(`artipeek (push): device ${short(token)} (${env}${name ? `, ${name}` : ""}) registered by ${by}`);
-      return json(200, { ok: true, devices: devices().length, badge: openCount(scope) });
+      return json(200, { ok: true, devices: devices().length, badge: badgeCount(scope) });
     }
     if (path === "/_/push/unregister") {
       if (!TOKEN_RE.test(token)) return json(400, { ok: false, error: "needs token" });
@@ -220,7 +223,7 @@ export function createPush(deps: Deps) {
       const list = token ? all.filter((d) => d.token === token) : all;
       if (!list.length) return json(404, { ok: false, error: token ? "this device is not registered" : "no devices" });
       const res = await sendTo(list, (d) => ({
-        payload: { aps: { alert: { title: "artipeek · test", body: "Push works." }, sound: "default", badge: openCount(d.scope as DeviceScope) }, url: "/decisions" },
+        payload: { aps: { alert: { title: "artipeek · test", body: "Push works." }, sound: "default", badge: badgeCount(d.scope as DeviceScope) }, url: "/decisions" },
       }));
       console.log(`artipeek (push): test push by ${by}: ${res.sent}/${list.length} sent`);
       return json(res.sent ? 200 : 502, { ok: res.sent > 0, sent: res.sent, devices: list.length, ...(res.sent ? {} : { error: "APNs did not take it (see the server log)" }) });

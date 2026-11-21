@@ -151,6 +151,26 @@ try {
   ok(c.exitCode === 0 && (await get(A2)).status === "open" && (await get(A2)).resolution === "needs your 2FA code", "artipeek-decide action handback → back to the person, with why");
   r = await api("POST", "/api/actions/one", { title: "Moot", steps: ["x"] });
   ok(decide("action", "withdraw", r.j.id, "not needed").exitCode === 0 && (await get(r.j.id)).status === "withdrawn", "withdraw");
+
+  // ----- the Watch's JSON (app 1.2): actions next to the open decisions, the badge -----
+  const AX = (await api("POST", "/api/actions/one", { title: "Renew the TLS cert", urgent: true, from: ["D317"], context: "The cert ends **Friday**.", steps: [{ text: "Run **certbot** on [web-1](https://example.com/web-1)", command: "sudo certbot renew --deploy-hook 'systemctl reload nginx'", where: "web-1" }, "Check the site"] })).j.id;
+  const AG = (await api("POST", "/api/actions/one", { title: "Rotate the backups key", steps: ["Make a key", "Store it"] })).j.id;
+  await act({ id: AG, op: "agent", note: "the vault has it" });
+  await wait(400);
+  const aj = JSON.parse(await page("/decisions/part/app.json"));
+  const openDecs = (await api("GET", "/api/decisions/one?status=open")).j.decisions.length + (await api("GET", "/api/decisions/two?status=open", undefined, TOK.two)).j.decisions.length;
+  ok(aj.open === openDecs && aj.decisions.length === openDecs && typeof aj.urgent === "number", `app.json: open, urgent, decisions keep their meaning for app 1.1 (${aj.open} open decisions)`);
+  ok(aj.actions.map((x: any) => x.id).join(",") === `${AX},${A2},${AG}`, `…actions: to do (urgent first), then with the agent; done and withdrawn left out (${aj.actions.map((x: any) => x.id)})`);
+  ok(aj.actionCounts?.todo === 2 && aj.actionCounts.urgent === 1 && aj.actionCounts.agent === 1 && aj.badge === openDecs + 2, `…actionCounts {todo, urgent, agent}, badge = open decisions + actions to do (${JSON.stringify(aj.actionCounts)}, ${aj.badge})`);
+  const ax = aj.actions[0], ag = aj.actions[2];
+  ok(ax.status === "open" && ax.urgent && ax.flagged && ax.ticked === 0 && ax.from.join() === "D317" && ax.url === `/r/one/actions#a:one:${AX}` && ax.context === "The cert ends Friday.", "…an action: status, urgent, from, url, context as plain text");
+  ok(ax.steps.length === 2 && ax.steps[0].n === 1 && ax.steps[0].text === "Run certbot on web-1" && ax.steps[0].command === "sudo certbot renew --deploy-hook 'systemctl reload nginx'" && ax.steps[0].where === "web-1" && ax.steps[0].state === "todo" && ax.steps[1].command === null, "…its steps: plain text, the command as it is, where, state");
+  ok(ag.status === "agent" && ag.agentNote === "the vault has it" && !!ag.agentAskedAt && ax.agentAskedAt === null, "…one with the agent: when it was asked, the note");
+  ok((await fetch(`${L}/decisions/part/app.json`).then((r) => r.json()) as any).badge === aj.badge, "…same numbers on the local listener");
+  for (const x of [AX, AG]) decide("action", "withdraw", x, "test over");
+  const aj2 = JSON.parse(await page("/decisions/part/app.json"));
+  ok(aj2.actions.length === 1 && aj2.badge === openDecs + 1, "withdrawn actions leave the list and the badge");
+
   c = decide("actions");
   ok(c.exitCode === 0 && c.stdout.toString().includes(`${A2}    open      0/2`) && !c.stdout.toString().includes("A1 "), "artipeek-decide actions lists the live ones");
   ok(decide("action", "show", A2).stdout.toString().includes("[ ] 1. Open the TikTok business centre"), "artipeek-decide action show");

@@ -171,11 +171,14 @@ try {
   await api("POST", "/api/decisions/secret", { title: "Private question", urgent: true }, TOK.secret);
   await wait();
   ok(forGood().length === 0, "a decision raised for later, or in a folder the device can't see (not public), doesn't push");
-  // actions: one push when raised, no buttons (a tap opens it)
+  // actions: one push when raised, with the action buttons ("Ask the agent…", "Open"); a tap opens it
   r = await api("POST", "/api/actions/one", { title: "Run the backfill", steps: ["ssh", "run"] });
   await wait();
   const pa = forGood();
-  ok(pa.length === 1 && pa[0].body.aps.alert.title === `one · ${r.j.id} · action for you` && pa[0].body.aps.alert.body === "Run the backfill\n2 steps" && pa[0].body.url === `/r/one/actions#a:one:${r.j.id}` && !pa[0].body.aps.category, `a new action pushes once: no buttons, a tap opens it (${JSON.stringify(pa[0]?.body?.aps?.alert)})`);
+  ok(pa.length === 1 && pa[0].body.aps.alert.title === `one · ${r.j.id} · action for you` && pa[0].body.aps.alert.body === "Run the backfill\n2 steps" && pa[0].body.url === `/r/one/actions#a:one:${r.j.id}`, `a new action pushes once; a tap opens it (${JSON.stringify(pa[0]?.body?.aps?.alert)})`);
+  ok(pa[0]?.body.aps.category === "artipeek.action" && pa[0]?.body.kind === "action" && pa[0]?.body.project === "one" && pa[0]?.body.id === r.j.id && !pa[0]?.body.aps["mutable-content"], "…category artipeek.action, data {kind, project, id, url} (no notification extension)");
+  const openDec = (await api("GET", "/api/decisions/one?status=open")).j.decisions.length;
+  ok(pa[0]?.body.aps.badge === openDec + 1, `badge = open decisions + actions to do (${pa[0]?.body.aps.badge} = ${openDec} + 1)`);
   got = [];
   await api("PATCH", `/api/actions/one/${r.j.id}`, { title: "Run the backfill tonight" });
   await wait();

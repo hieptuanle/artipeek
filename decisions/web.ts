@@ -172,6 +172,9 @@ export const outlineItem = (d: Full) =>
   `<li class="oi oi-${esc(d.status)}${isUrgent(d) ? " urgent" : ""}" data-k="${esc(d.project)}/${esc(d.id)}"><a href="#${esc(domId(d.project, d.id))}"><span class="oid">${esc(d.id)}</span><span class="ot">${esc(d.title)}</span><span class="opj">${esc(d.project)}</span></a></li>`;
 
 export type Filter = { status: string; project: string | null; urgent: boolean };
+// Markdown → plain text for the Watch (no code blocks, no marks, links as their text).
+const plain = (m: string) => m.replace(/```[\s\S]*?```/g, "").replace(/[*_`#>]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\n{3,}/g, "\n\n").trim();
+
 export function filterFrom(q: URLSearchParams): Filter {
   const st = q.get("status") ?? "open";
   return { status: st in FILTERS ? st : "open", project: q.get("project") || null, urgent: q.get("urgent") === "1" };
@@ -217,10 +220,11 @@ export function createDecisionsWeb(deps: Deps) {
 
   // The Watch app's list: open decisions this listener shows, urgent first (nearest deadline first), then oldest first.
   // Plain text only (the Watch shows no HTML); context cut short. Read-only, same login as the page.
+  // Since app 1.2 also the live actions (to do first, then those with the agent) and their counts; `badge` is the app's
+  // badge (open decisions + actions to do, as push/notify.ts badgeCount). open/urgent/decisions keep their meaning (1.1).
   function appList(scope: Scope) {
     const now = Date.now();
     const list = hub.list({ projects: projectsIn(scope), statuses: ["open"], limit: 200 });
-    const plain = (m: string) => m.replace(/```[\s\S]*?```/g, "").replace(/[*_`#>]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\n{3,}/g, "\n\n").trim();
     const items = list.map((d) => {
       const last = d.answers.find((x) => x.kind === "answer");
       return {
@@ -233,7 +237,22 @@ export function createDecisionsWeb(deps: Deps) {
     });
     const dl = (x: { deadline: string | null }) => (x.deadline ? Date.parse(x.deadline) : Infinity);
     items.sort((x, y) => Number(y.urgent) - Number(x.urgent) || (x.urgent ? dl(x) - dl(y) : 0) || x.createdAt.localeCompare(y.createdAt));
-    return { open: items.length, urgent: items.filter((x) => x.urgent).length, decisions: items.slice(0, 50) };
+    const acts = hub.actionList({ projects: projectsIn(scope), statuses: ["open", "agent", "checking"], limit: 200 }).map((a) => ({
+      project: a.project, id: a.id, title: a.title, status: a.status, lane: a.lane, urgent: isUrgent(a, now), flagged: a.urgent,
+      deadline: a.deadline, createdAt: a.createdAt, context: plain(a.context).slice(0, 600),
+      steps: a.steps.map((x) => ({ n: x.n, text: plain(x.text), command: x.command, where: x.where, state: x.state, note: x.note })),
+      ticked: a.steps.filter((x) => x.state !== "todo").length,
+      from: a.from.filter((r) => projectsIn(scope).includes(r.project)).map((r) => (r.project !== a.project ? `${r.project}:` : "") + r.id),
+      agentAskedAt: a.status === "agent" ? a.agentAskedAt : null, agentNote: a.status === "agent" ? a.agentNote : null, resolution: a.resolution,
+      url: `/r/${encodeURIComponent(a.project)}/actions#a:${a.project}:${a.id}`,
+    }));
+    const todo = (x: { status: string }) => x.status === "open";
+    acts.sort((x, y) => Number(todo(y)) - Number(todo(x)) || Number(y.urgent) - Number(x.urgent) || (x.urgent ? dl(x) - dl(y) : 0) || x.createdAt.localeCompare(y.createdAt));
+    const actionCounts = { todo: acts.filter(todo).length, urgent: acts.filter((x) => x.urgent).length, agent: acts.filter((x) => !todo(x)).length };
+    return {
+      open: items.length, urgent: items.filter((x) => x.urgent).length, decisions: items.slice(0, 50),
+      actionCounts, actions: acts.slice(0, 50), badge: items.length + actionCounts.todo,
+    };
   }
 
   // The Decisions tab's content. Inside the app shell, or fetched by the app for a tab.

@@ -5,15 +5,15 @@ AI agents write plans, reports, email drafts, and code inside your local reposit
 Built with [Bun](https://bun.sh). It runs directly from TypeScript with no build step and no client framework. Keep it on localhost, share it with your own devices over [Tailscale](https://tailscale.com) (a private mesh VPN), or publish selected folders behind a Cloudflare Access login—with an optional iPhone and Apple Watch app for push notifications.
 
 <p>
-  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: open and urgent decisions per folder, then one card per folder with its newest files, file-type icons and status labels">
+  <img src="docs/screenshots/phone-home.png" width="200" alt="Home: open and urgent decisions and to-do actions per folder, then one card per folder with its newest files, file-type icons and status labels">
   <img src="docs/screenshots/phone-markdown.png" width="200" alt="Two tabs open; a Markdown file with its status bar, front matter and a table">
-  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: Decisions with its counts, Recent files of every folder, then the folders, with icons and status labels (sent, waiting, draft)">
+  <img src="docs/screenshots/phone-menu.png" width="200" alt="The file menu slides in: Decisions and Actions with their counts, Recent files of every folder, then the folders, with icons and status labels (sent, waiting, draft)">
   <img src="docs/screenshots/phone-dark-code.png" width="200" alt="Highlighted code in dark mode">
 </p>
 
 <img src="docs/screenshots/desktop-html.webp" alt="On a laptop the file list sits on the left, tabs on top. An agent's HTML explainer runs in the sandbox: animated SVG traffic routing, a chart that draws itself, a safety ring, an Option A/B toggle and answer buttons. Its status label comes from the README.md next to it">
 
-<img src="docs/screenshots/desktop-decisions.png" alt="The Decisions tab: open decisions of every folder, oldest first, an urgent one with its deadline, links between decisions, answer options, and the outline on the right">
+<img src="docs/screenshots/desktop-decisions.png" alt="The Decisions tab: open decisions of every folder, oldest first, an urgent one with its deadline, links to related decisions and actions, answer options, and the outline on the right">
 
 <sub>Screenshots use made-up demo folders.</sub>
 

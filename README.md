@@ -212,12 +212,12 @@ sequenceDiagram
   A->>S: Raise action A3 (from D317)
   S-->>U: Live SSE update (+ iOS push)
   U->>S: Tick step 1, then step 2
-  Note over S: Waits 1 min (batches ticks; slips can be unticked)
+  Note over S: Waits 1 min (batches ticks, a slip can be unticked)
   S-->>R: Append 1 ACTION line + commit + after
   S-->>U: Steps flip to "the agent is checking it"
   A->>S: Read signal (artipeek-decide answers)
   A->>S: Verify each step (verified / verify skipped / back to todo)
-  A->>S: Mark A3 done & move on
+  A->>S: Mark A3 done, moves on
   S-->>U: Live SSE update on Actions tab
 ```
 

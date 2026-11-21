@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>D12 — Roll out the new checkout: in stages or all at once?</title>
+<style>
+:root{--bg:#fff;--surface:#f7f9fc;--card:#fff;--line:#d8e0e8;--line-soft:#e9eef4;--fg:#18202a;--muted:#576374;--subtle:#7c899b;--accent:#0f8a5f;--accent-btn:#137a54;--accent-soft:#e6f6ef;--accent-border:#9bdcc2;--accent-glow:rgba(15,138,95,.22);--warn:#c75b12;--warn-soft:#fff2e6;--warn-border:#f3c199;--warn-glow:rgba(199,91,18,.22);--info:#0969da;--info-soft:#e7f3ff;--legacy:#64748b;--shadow:0 1px 2px rgba(24,32,42,.04),0 6px 20px rgba(24,32,42,.04);--active:var(--accent);--active-soft:var(--accent-soft);--active-border:var(--accent-border);--active-glow:var(--accent-glow)}
+body[data-mode="B"]{--active:var(--warn);--active-soft:var(--warn-soft);--active-border:var(--warn-border);--active-glow:var(--warn-glow)}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--surface:#131922;--card:#161d27;--line:#2a3442;--line-soft:#1f2835;--fg:#e6edf3;--muted:#9aa6b5;--subtle:#6e7b8c;--accent:#34d399;--accent-btn:#1f883d;--accent-soft:rgba(52,211,153,.13);--accent-border:rgba(52,211,153,.36);--accent-glow:rgba(52,211,153,.28);--warn:#f59e0b;--warn-soft:rgba(245,158,11,.14);--warn-border:rgba(245,158,11,.38);--warn-glow:rgba(245,158,11,.28);--info:#58a6ff;--info-soft:rgba(88,166,255,.14);--legacy:#8b9bb0;--shadow:0 2px 10px rgba(0,0,0,.28)}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:16px 20px 28px}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.title-block{flex:1;min-width:260px}
+.eyebrow{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;letter-spacing:.02em;color:var(--muted);margin-bottom:4px}
+.eyebrow .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;padding:1px 6px;border-radius:5px;background:var(--info-soft);color:var(--info)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--active);box-shadow:0 0 0 3px var(--active-glow);animation:pulseDot 2.2s ease-in-out infinite;transition:background .3s ease}
+@keyframes pulseDot{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.22);opacity:.72}}
+h1{margin:0 0 3px;font-size:20px;line-height:1.22;letter-spacing:-.02em;font-weight:700}
+.subtitle{margin:0;font-size:13px;color:var(--muted)}
+
+.switch{position:relative;display:inline-grid;grid-template-columns:1fr 1fr;padding:3px;border-radius:10px;background:var(--surface);border:1px solid var(--line);flex:none;align-self:center}
+.switch-thumb{position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:7px;background:var(--card);border:1px solid var(--active-border);box-shadow:0 1px 4px rgba(0,0,0,.08);transition:transform .32s cubic-bezier(.22,1,.36,1),border-color .3s ease;pointer-events:none}
+body[data-mode="B"] .switch-thumb{transform:translateX(100%)}
+.switch button{position:relative;z-index:1;appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;padding:6px 12px;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;transition:color .25s ease}
+.switch button[aria-selected="true"]{color:var(--fg)}
+.switch .pill-rec{font-size:10px;font-weight:700;padding:1px 5px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
+
+.grid{display:grid;grid-template-columns:1.28fr 1fr;gap:14px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow);min-width:0;display:flex;flex-direction:column}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.card-title{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.mode-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--active-soft);color:var(--active);border:1px solid var(--active-border);transition:background .3s ease,color .3s ease,border-color .3s ease;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.flow-svg,.chart-svg{width:100%;height:auto;display:block}
+.flow-svg{overflow:visible}
+.chart-svg{margin-bottom:10px}
+.svg-card{fill:var(--surface);stroke:var(--line);stroke-width:1.2;transition:stroke .35s ease,opacity .35s ease}
+.svg-card-active{stroke:var(--active);stroke-width:1.6}
+.svg-card-inner{fill:var(--card);stroke:var(--line-soft);stroke-width:1}
+.svg-txt{fill:var(--fg);font-family:inherit}
+.svg-muted{fill:var(--muted);font-family:inherit}
+.svg-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.pipe-bg{fill:none;stroke:var(--line-soft);stroke-width:8;stroke-linecap:round}
+.pipe-rail{fill:none;stroke-width:2.2;stroke-linecap:round;transition:stroke .35s ease,opacity .35s ease}
+.pipe-v2{stroke:var(--active);opacity:.58}
+.pipe-v1{stroke:var(--legacy);opacity:.48}
+body[data-mode="B"] .pipe-v1{opacity:.16;stroke-dasharray:4 5}
+body[data-mode="B"] #node-v1{opacity:.46}
+#router-dial{transform-origin:210px 104px;transition:transform .55s cubic-bezier(.22,1,.36,1)}
+#v2-halo{opacity:0;transition:opacity .35s ease}
+body[data-mode="B"] #v2-halo{opacity:1;animation:blastPulse 1.9s ease-in-out infinite;transform-origin:402px 58px}
+@keyframes blastPulse{0%,100%{transform:scale(1);opacity:.55}50%{transform:scale(1.04);opacity:.14}}
+#ekg-wave{stroke-dasharray:34 66;stroke-dashoffset:0;animation:ekgMove 2.2s linear infinite}
+@keyframes ekgMove{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+body[data-mode="B"] #ekg-wave{animation-duration:4.8s;opacity:.55}
+
+.stage-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:8px;border-top:1px solid var(--line-soft);font-size:11.5px;color:var(--muted)}
+.stage-bar>span{white-space:nowrap}
+.stage-pills{display:flex;gap:4px;flex-wrap:nowrap}
+.stage-pill{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--muted);font:inherit;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap;transition:all .2s ease}
+.stage-pill.on{background:var(--active-soft);color:var(--active);border-color:var(--active-border)}
+body[data-mode="B"] .stage-pills{opacity:.42;pointer-events:none}
+
+.chart-grid{stroke:var(--line-soft);stroke-width:1}
+.chart-axis{fill:var(--subtle);font-size:9.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+#curve-line{fill:none;stroke:var(--active);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;transition:stroke .3s ease}
+#curve-area{transition:opacity .35s ease}
+.beacon-ring{transform-box:fill-box;transform-origin:center;animation:beacon 2.1s ease-out infinite}
+@keyframes beacon{0%{transform:scale(.8);opacity:.85}100%{transform:scale(2.6);opacity:0}}
+
+.metrics-split{display:grid;grid-template-columns:86px 1fr;gap:12px;align-items:center;margin-top:auto;padding-top:8px;border-top:1px solid var(--line-soft)}
+.ring-wrap{position:relative;width:82px;height:82px;margin:0 auto}
+.ring-svg{width:82px;height:82px;transform:rotate(-90deg);display:block}
+.ring-track{fill:none;stroke:var(--line-soft);stroke-width:7}
+#ring-arc{fill:none;stroke:var(--active);stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .7s cubic-bezier(.22,1,.36,1),stroke .3s ease}
+.ring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.ring-num{font-size:19px;font-weight:800;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.ring-lbl{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-top:2px}
+.bars{display:flex;flex-direction:column;gap:7px}
+.bar-row{display:flex;flex-direction:column;gap:3px}
+.bar-meta{display:flex;justify-content:space-between;font-size:11.5px;gap:8px}
+.bar-meta .k{color:var(--muted)}
+.bar-meta .v{font-weight:700;font-variant-numeric:tabular-nums}
+.bar-track{height:6px;border-radius:999px;background:var(--line-soft);overflow:hidden}
+.bar-fill{height:100%;border-radius:999px;background:var(--active);width:0;transition:width .65s cubic-bezier(.22,1,.36,1),background .3s ease}
+.bar-fill.info{background:var(--info)}
+
+.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.fact{background:var(--surface);border:1px solid var(--line-soft);border-radius:10px;padding:8px 11px}
+.fact-k{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--subtle);margin-bottom:2px}
+.fact-v{font-size:12.5px;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+
+.decision-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.decision-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1}
+.ans-btn{appearance:none;font:inherit;font-size:12.5px;font-weight:600;padding:7px 13px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;transition:border-color .2s,background .2s,transform .12s}
+.ans-btn:hover{border-color:var(--active)}
+.ans-btn:active{transform:translateY(1px)}
+.ans-btn.primary{background:var(--accent-btn);border-color:var(--accent-btn);color:#fff}
+.ans-btn[data-artipeek-chosen="true"]{outline:2px solid var(--info);outline-offset:2px}
+.note-wrap{display:flex;align-items:center;gap:6px;margin-left:auto}
+.note-wrap input{font:inherit;font-size:12.5px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);width:195px}
+.saved-msg{font-size:12px;font-weight:600;color:var(--accent);display:none}
+.saved-msg.show{display:inline}
+
+.section-title{margin:20px 0 10px;font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.stages{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.stage-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.stage-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.stage-icon{width:28px;height:28px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;flex:none}
+.stage-card h3{margin:0;font-size:13.5px;font-weight:700}
+.stage-card .when{font-size:11.5px;color:var(--muted)}
+.stage-card p{margin:6px 0 0;font-size:12.5px;color:var(--muted)}
+
+.ux-compare{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:center}
+.ux-compare h3{margin:0 0 6px;font-size:14px}
+.ux-compare ul{margin:0;padding-left:18px;color:var(--muted);font-size:12.5px}
+.ux-compare li{margin-bottom:4px}
+
+@media (max-width:740px){
+  .wrap{padding:12px 14px 24px}
+  h1{font-size:18px}
+  .switch{width:100%}
+  .grid,.facts,.stages,.ux-compare{grid-template-columns:1fr}
+  .stage-bar,.stage-pills{flex-wrap:wrap}
+  .mode-badge{white-space:normal}
+  .note-wrap{width:100%;margin-left:0}
+  .note-wrap input{flex:1;width:auto;min-width:0}
+  .decision-actions .ans-btn{flex:1;text-align:center}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+}
+</style>
+</head>
+<body data-mode="A">
+<div class="wrap">
+  <header class="top">
+    <div class="title-block">
+      <div class="eyebrow">
+        <span class="tag">D12</span>
+        <span class="live-dot" aria-hidden="true"></span>
+        <span>Decision explainer · Due Fri 09:30</span>
+      </div>
+      <h1>Roll out the new checkout: in stages or all at once?</h1>
+      <p class="subtitle">Checkout v2 cuts form fields from 9 to 4 (+3.4% conversion in beta). Compare traffic routing, risk, and recovery before Friday.</p>
+    </div>
+    <div class="switch" role="tablist" aria-label="Rollout strategy">
+      <div class="switch-thumb" aria-hidden="true"></div>
+      <button id="btn-A" role="tab" aria-selected="true" type="button"><span>Option A · Staged</span><span class="pill-rec">Rec</span></button>
+      <button id="btn-B" role="tab" aria-selected="false" type="button"><span>Option B · All at once</span></button>
+    </div>
+  </header>
+
+  <section class="grid" aria-label="Interactive rollout comparison">
+    <article class="card">
+      <div class="card-head">
+        <span class="card-title">Traffic Routing &amp; Guardrails</span>
+        <span class="mode-badge" id="flow-badge">Stage 1 · 10% to v2 · Auto-rollback</span>
+      </div>
+
+      <svg class="flow-svg" viewBox="0 0 494 226" role="img" aria-label="Animated traffic flow from shoppers through the canary router to Checkout v2 and Checkout v1">
+        <defs>
+          <pattern id="dots" width="44" height="44" patternUnits="userSpaceOnUse"><circle cx="22" cy="22" r="1.15" fill="var(--line)" opacity=".35"/></pattern>
+          <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <rect width="494" height="226" fill="url(#dots)"/>
+
+        <path class="pipe-bg" d="M106 104H172"/>
+        <path id="path-in" class="pipe-rail" stroke="var(--info)" opacity=".52" d="M106 104H172"/>
+        <path class="pipe-bg" d="M248 104C282 104 282 58 318 58"/>
+        <path id="path-v2" class="pipe-rail pipe-v2" d="M248 104C282 104 282 58 318 58"/>
+        <path class="pipe-bg" d="M248 104C282 104 282 154 318 154"/>
+        <path id="path-v1" class="pipe-rail pipe-v1" d="M248 104C282 104 282 154 318 154"/>
+        <path d="M210 142V168" stroke="var(--active)" stroke-width="1.6" stroke-dasharray="3 3" opacity=".72"/>
+
+        <g id="packets" filter="url(#glow)"></g>
+
+        <g transform="translate(6,56)">
+          <rect width="100" height="96" rx="12" class="svg-card"/>
+          <rect x="32" y="14" width="36" height="34" rx="8" fill="var(--info-soft)"/>
+          <path d="M42 26L44 41H56L58 26Z" fill="none" stroke="var(--info)" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M46 26C46 21 54 21 54 26" fill="none" stroke="var(--info)" stroke-width="1.8" stroke-linecap="round"/>
+          <text x="50" y="65" text-anchor="middle" font-size="11.5" font-weight="700" class="svg-txt">Shoppers</text>
+          <text x="50" y="80" text-anchor="middle" font-size="9.8" class="svg-muted svg-mono">1,420 / hr</text>
+        </g>
+
+        <g>
+          <circle cx="210" cy="104" r="38" class="svg-card svg-card-active"/>
+          <circle cx="210" cy="104" r="29" fill="none" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 3"/>
+          <g id="router-dial">
+            <path d="M210 75A29 29 0 0 1 239 104" fill="none" stroke="var(--active)" stroke-width="3.2" stroke-linecap="round"/>
+            <circle cx="239" cy="104" r="3.5" fill="var(--active)"/>
+          </g>
+          <text id="router-pct" x="210" y="101" text-anchor="middle" font-size="14" font-weight="800" class="svg-txt svg-mono">10%</text>
+          <text x="210" y="114" text-anchor="middle" font-size="8.5" font-weight="600" class="svg-muted">FLAG GATE</text>
+        </g>
+
+        <g transform="translate(88,168)">
+          <rect width="234" height="48" rx="10" class="svg-card"/>
+          <path d="M22 14L31 17.5V25C31 30.5 27 34.5 22 36.5C17 34.5 13 30.5 13 25V17.5Z" fill="var(--active-soft)" stroke="var(--active)" stroke-width="1.5"/>
+          <path id="shield-mark" d="M18.5 25L21 27.5L26 22" fill="none" stroke="var(--active)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          <text id="guard-title" x="40" y="21.5" font-size="10.5" font-weight="700" class="svg-txt">Auto-rollback armed</text>
+          <text id="guard-sub" x="40" y="35.5" font-size="9.2" class="svg-muted">Reverts &lt; 90s if errors &gt; 0.5%</text>
+          <line x1="176" y1="11" x2="176" y2="37" stroke="var(--line-soft)" stroke-width="1"/>
+          <path d="M183 25H193L197 16L202 33L206 21L210 25H224" fill="none" stroke="var(--active)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/>
+          <path id="ekg-wave" d="M183 25H193L197 16L202 33L206 21L210 25H224" fill="none" stroke="var(--active)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+
+        <g id="node-v2">
+          <rect id="v2-halo" x="313" y="13" width="178" height="90" rx="15" fill="none" stroke="var(--warn)" stroke-width="2"/>
+          <rect x="318" y="18" width="168" height="80" rx="12" class="svg-card svg-card-active"/>
+          <rect x="328" y="28" width="44" height="58" rx="6" class="svg-card-inner"/>
+          <rect x="334" y="35" width="22" height="4" rx="2" fill="var(--active)" opacity=".75"/>
+          <rect x="334" y="44" width="32" height="5" rx="2" fill="var(--line)"/>
+          <rect x="334" y="53" width="32" height="5" rx="2" fill="var(--line)"/>
+          <rect x="334" y="63" width="32" height="7" rx="3" fill="var(--active)"/>
+          <rect x="334" y="74" width="18" height="3" rx="1.5" fill="var(--line)"/>
+          <text x="382" y="37" font-size="11.5" font-weight="700" class="svg-txt">Checkout v2</text>
+          <text x="382" y="51" font-size="9.5" class="svg-muted">1 page · 4 fields</text>
+          <rect x="382" y="60" width="90" height="6" rx="3" fill="var(--line-soft)"/>
+          <rect id="v2-meter" x="382" y="60" width="12" height="6" rx="3" fill="var(--active)"/>
+          <text id="v2-share" x="382" y="80" font-size="9.6" font-weight="700" fill="var(--active)" class="svg-mono">10% · 142/hr</text>
+        </g>
+
+        <g id="node-v1">
+          <rect x="318" y="114" width="168" height="80" rx="12" class="svg-card"/>
+          <rect x="328" y="124" width="44" height="58" rx="6" class="svg-card-inner"/>
+          <rect x="333" y="130" width="10" height="3" rx="1.5" fill="var(--legacy)"/>
+          <rect x="345" y="130" width="10" height="3" rx="1.5" fill="var(--line)"/>
+          <rect x="357" y="130" width="10" height="3" rx="1.5" fill="var(--line)"/>
+          <rect x="334" y="138" width="32" height="4" rx="1.5" fill="var(--line)"/>
+          <rect x="334" y="145" width="32" height="4" rx="1.5" fill="var(--line)"/>
+          <rect x="334" y="152" width="32" height="4" rx="1.5" fill="var(--line)"/>
+          <rect x="334" y="159" width="32" height="4" rx="1.5" fill="var(--line)"/>
+          <rect x="334" y="167" width="24" height="6" rx="2.5" fill="var(--legacy)" opacity=".7"/>
+          <text x="382" y="133" font-size="11.5" font-weight="700" class="svg-txt">Checkout v1</text>
+          <text x="382" y="147" font-size="9.5" class="svg-muted">3 steps · 9 fields</text>
+          <rect x="382" y="156" width="90" height="6" rx="3" fill="var(--line-soft)"/>
+          <rect id="v1-meter" x="382" y="156" width="80" height="6" rx="3" fill="var(--legacy)"/>
+          <text id="v1-share" x="382" y="176" font-size="9.6" font-weight="700" fill="var(--legacy)" class="svg-mono">90% · 1,278/hr</text>
+        </g>
+      </svg>
+
+      <div class="stage-bar">
+        <span id="stage-hint">Canary stage:</span>
+        <div class="stage-pills" role="group" aria-label="Canary stage">
+          <button type="button" class="stage-pill on" data-stage="0">Day 1 · 10%</button>
+          <button type="button" class="stage-pill" data-stage="1">Day 2 · 50%</button>
+          <button type="button" class="stage-pill" data-stage="2">Day 3 · 100%</button>
+        </div>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <span class="card-title">72h Exposure &amp; Safety</span>
+        <span class="mode-badge" id="chart-badge">Stepped ramp</span>
+      </div>
+
+      <svg class="chart-svg" viewBox="0 0 340 126" role="img" aria-label="Checkout v2 traffic share over 72 hours">
+        <defs>
+          <linearGradient id="area-grad-A" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".3"/><stop offset="100%" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient>
+          <linearGradient id="area-grad-B" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--warn)" stop-opacity=".3"/><stop offset="100%" stop-color="var(--warn)" stop-opacity=".03"/></linearGradient>
+        </defs>
+        <rect id="risk-band" x="34" y="14" width="97" height="86" rx="4" fill="var(--warn-soft)" opacity="0"/>
+        <text id="risk-label" x="82.5" y="61" text-anchor="middle" font-size="9" font-weight="700" fill="var(--warn)" opacity="0">24h unbuffered</text>
+        <text id="risk-label2" x="82.5" y="73" text-anchor="middle" font-size="8.5" font-weight="600" fill="var(--warn)" opacity="0">exposure window</text>
+        <line class="chart-grid" x1="34" y1="14" x2="326" y2="14"/>
+        <line class="chart-grid" x1="34" y1="57" x2="326" y2="57" stroke-dasharray="3 3"/>
+        <line class="chart-grid" x1="34" y1="100" x2="326" y2="100"/>
+        <text class="chart-axis" x="28" y="17" text-anchor="end">100%</text>
+        <text class="chart-axis" x="28" y="60" text-anchor="end">50%</text>
+        <text class="chart-axis" x="28" y="103" text-anchor="end">0%</text>
+        <path id="curve-area" fill="url(#area-grad-A)" d=""/>
+        <path id="curve-line" d=""/>
+        <g id="chart-points"></g>
+        <text class="chart-axis" x="34" y="118">Fri 10:00</text>
+        <text class="chart-axis" x="131" y="118" text-anchor="middle">Sat 10:00</text>
+        <text class="chart-axis" x="229" y="118" text-anchor="middle">Sun 10:00</text>
+        <text class="chart-axis" x="326" y="118" text-anchor="end">Mon 10:00</text>
+      </svg>
+
+      <div class="metrics-split">
+        <div class="ring-wrap" aria-label="Safety score">
+          <svg class="ring-svg" viewBox="0 0 84 84">
+            <circle class="ring-track" cx="42" cy="42" r="34"/>
+            <circle id="ring-arc" cx="42" cy="42" r="34" stroke-dasharray="213.63" stroke-dashoffset="213.63"/>
+          </svg>
+          <div class="ring-center"><span class="ring-num" id="ring-val">96</span><span class="ring-lbl">Safety</span></div>
+        </div>
+        <div class="bars">
+          <div class="bar-row"><div class="bar-meta"><span class="k">Peak blast radius</span><span class="v" id="val-blast">10% of carts</span></div><div class="bar-track"><div class="bar-fill" id="bar-blast"></div></div></div>
+          <div class="bar-row"><div class="bar-meta"><span class="k">Rollback speed</span><span class="v" id="val-rollback">&lt; 90 sec (auto)</span></div><div class="bar-track"><div class="bar-fill" id="bar-rollback"></div></div></div>
+          <div class="bar-row"><div class="bar-meta"><span class="k">Full +3.4% lift</span><span class="v" id="val-lift">Mon 10:00 (72h)</span></div><div class="bar-track"><div class="bar-fill info" id="bar-lift"></div></div></div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section class="facts" aria-label="Key numbers">
+    <div class="fact"><div class="fact-k">Beta evidence</div><div class="fact-v">142 testers · 99.4% crash-free · +3.4% conversion</div></div>
+    <div class="fact"><div class="fact-k">Guardrail trigger</div><div class="fact-v" id="fact-guard">Auto-revert if errors &gt; 0.5% or p95 &gt; 800 ms</div></div>
+    <div class="fact"><div class="fact-k">Engineering trade-off</div><div class="fact-v" id="fact-trade">1 small flag-cleanup PR on Tuesday (~15 min)</div></div>
+  </section>
+
+  <section class="decision-bar" aria-label="Submit your decision">
+    <div class="decision-actions">
+      <button type="button" class="ans-btn primary" data-artipeek-answer="D12" data-value="A">A · Staged canary (10% → 50% → 100%)</button>
+      <button type="button" class="ans-btn" data-artipeek-answer="D12" data-value="B">B · All at once Friday</button>
+      <div class="note-wrap">
+        <input id="d12-note" type="text" placeholder="Optional note for agent…">
+        <button type="button" class="ans-btn" data-artipeek-answer="D12" data-input="#d12-note">Send note</button>
+      </div>
+    </div>
+    <span class="saved-msg" id="saved-msg" role="status"></span>
+  </section>
+
+  <h2 class="section-title">Staged canary gates (Option A)</h2>
+  <section class="stages">
+    <div class="stage-card">
+      <div class="stage-head"><div class="stage-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 2L13 4.2V8C13 11 10.8 13.3 8 14.3C5.2 13.3 3 11 3 8V4.2L8 2Z"/><path d="M5.8 8.2L7.3 9.7L10.4 6.5"/></svg></div><div><h3>Stage 1 · 10%</h3><div class="when">Fri 10:00 → Sat 10:00</div></div></div>
+      <p>Routes 1 in 10 shoppers to v2 during Friday peak. Confirms card webhooks, promo codes, and tax rounding on live orders.</p>
+    </div>
+    <div class="stage-card">
+      <div class="stage-head"><div class="stage-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2.5 11.5A6 6 0 1 1 13.5 11.5"/><path d="M8 8.5L11 5.5"/><circle cx="8" cy="8.5" r="1.2" fill="currentColor"/></svg></div><div><h3>Stage 2 · 50%</h3><div class="when">Sat 10:00 → Mon 10:00</div></div></div>
+      <p>Clean 50/50 split over the weekend gives statistical power to verify the +3.4% conversion lift against v1 in the same window.</p>
+    </div>
+    <div class="stage-card">
+      <div class="stage-head"><div class="stage-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13V3.5C5 2.5 7 4.5 9 3.5C10.8 2.6 12 3.2 13 3.5V9.5C12 9.2 10.8 8.6 9 9.5C7 10.5 5 8.5 3 9.5"/></svg></div><div><h3>Stage 3 · 100%</h3><div class="when">Mon 10:00 onward</div></div></div>
+      <p>Promotes everyone with engineers online. Legacy v1 stays warm behind the flag for 24h before Tuesday cleanup.</p>
+    </div>
+  </section>
+
+  <section class="ux-compare">
+    <div>
+      <h3>What changed in Checkout v2</h3>
+      <ul>
+        <li>Merged shipping, billing, and card entry into a single adaptive screen (9 fields → 4).</li>
+        <li>Auto-detects postal code &amp; city; removes the separate confirmation click.</li>
+        <li>Beta cohort (142 testers) completed checkout 28 seconds faster on mobile.</li>
+      </ul>
+    </div>
+    <svg viewBox="0 0 360 116" role="img" aria-label="Comparison of 3-step Checkout v1 and single-page Checkout v2">
+      <rect x="4" y="8" width="150" height="100" rx="10" class="svg-card"/>
+      <text x="16" y="26" font-size="10.5" font-weight="700" class="svg-muted">v1 · 3 steps (9 fields)</text>
+      <rect x="16" y="36" width="38" height="24" rx="4" class="svg-card-inner"/><rect x="60" y="36" width="38" height="24" rx="4" class="svg-card-inner"/><rect x="104" y="36" width="38" height="24" rx="4" class="svg-card-inner"/>
+      <text x="35" y="51" text-anchor="middle" font-size="8.5" class="svg-muted">Ship</text><text x="79" y="51" text-anchor="middle" font-size="8.5" class="svg-muted">Bill</text><text x="123" y="51" text-anchor="middle" font-size="8.5" class="svg-muted">Pay</text>
+      <text x="16" y="84" font-size="10" class="svg-muted svg-mono">Median: 74 sec</text><text x="16" y="98" font-size="10" class="svg-muted svg-mono">Drop-off: 29.1%</text>
+      <path d="M164 58H194M189 53L195 58L189 63" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="206" y="8" width="150" height="100" rx="10" class="svg-card svg-card-active"/>
+      <text x="218" y="26" font-size="10.5" font-weight="700" fill="var(--accent)">v2 · 1 page (4 fields)</text>
+      <rect x="218" y="36" width="126" height="24" rx="5" fill="var(--accent-soft)" stroke="var(--accent-border)"/>
+      <text x="281" y="51" text-anchor="middle" font-size="9" font-weight="700" fill="var(--accent)">Express single-page pay</text>
+      <text x="218" y="84" font-size="10" font-weight="700" class="svg-txt svg-mono">Median: 46 sec (-38%)</text><text x="218" y="98" font-size="10" font-weight="700" fill="var(--accent)" class="svg-mono">Conversion: +3.4%</text>
+    </svg>
+  </section>
+</div>
+
+<script>
+(function(){
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var NS = "http://www.w3.org/2000/svg";
+  var el = function(id){ return document.getElementById(id); };
+  var STAGES = [
+    { label:"Stage 1 · 10% to v2 · Auto-rollback", pct:10, v2Rate:"142/hr", v1Rate:"1,278/hr", v2Ratio:.34, v2Bar:12, v1Bar:80, angle:0 },
+    { label:"Stage 2 · 50% to v2 · Auto-rollback", pct:50, v2Rate:"710/hr", v1Rate:"710/hr", v2Ratio:.50, v2Bar:45, v1Bar:45, angle:-20 },
+    { label:"Stage 3 · 100% to v2 · Flag warm 24h", pct:100, v2Rate:"1,420/hr", v1Rate:"0/hr", v2Ratio:.92, v2Bar:90, v1Bar:0, angle:-42 }
+  ];
+  var MODES = {
+    A: {
+      chartBadge:"Stepped ramp", safety:96, blastText:"10% of carts", blastBar:14,
+      rollbackText:"< 90 sec (auto)", rollbackBar:15, liftText:"Mon 10:00 (72h)", liftBar:72,
+      guardTitle:"Auto-rollback armed", guardSub:"Reverts < 90s if errors > 0.5%",
+      factGuard:"Auto-revert if errors > 0.5% or p95 > 800 ms",
+      factTrade:"1 small flag-cleanup PR on Tuesday (~15 min)",
+      curve:"M34 91H122C130 91 132 57 140 57H220C228 57 230 14 238 14H326",
+      area:"M34 100V91H122C130 91 132 57 140 57H220C228 57 230 14 238 14H326V100Z",
+      points:[{x:34,y:91,t:"10%",dx:12,dy:-8,p:1},{x:140,y:57,t:"50%",dx:4,dy:-9},{x:238,y:14,t:"100%",dx:6,dy:14}]
+    },
+    B: {
+      chartBadge:"Immediate 100%", safety:64, blastText:"100% of carts", blastBar:100,
+      rollbackText:"~25 min (manual)", rollbackBar:84, liftText:"Fri 10:00 (now)", liftBar:100,
+      guardTitle:"Manual rollback only", guardSub:"Requires redeploy (~25 min)",
+      factGuard:"No automatic flag revert; engineer redeploys v1",
+      factTrade:"No feature flag cleanup; +3.4% lift starts Friday",
+      curve:"M34 100L38 14H326", area:"M34 100L38 14H326V100Z",
+      points:[{x:38,y:14,t:"100% Fri",dx:12,dy:15,p:1},{x:326,y:14,t:"",dx:0,dy:0}]
+    }
+  };
+  var state = { mode:"A", stage:0, safety:0 };
+  var pathIn = el("path-in"), pathV2 = el("path-v2"), pathV1 = el("path-v1");
+  var packetLayer = el("packets"), ringArc = el("ring-arc"), ringVal = el("ring-val");
+  var curveLine = el("curve-line"), curveArea = el("curve-area"), chartPoints = el("chart-points");
+  var riskEls = [el("risk-band"), el("risk-label"), el("risk-label2")];
+  var RING_CIRC = 2 * Math.PI * 34;
+
+  function drawChart(cfg, mode){
+    curveLine.setAttribute("d", cfg.curve);
+    curveArea.setAttribute("d", cfg.area);
+    curveArea.setAttribute("fill", mode === "A" ? "url(#area-grad-A)" : "url(#area-grad-B)");
+    riskEls.forEach(function(r){ r.style.transition = reduced ? "none" : "opacity .35s ease"; r.setAttribute("opacity", mode === "B" ? "1" : "0"); });
+    var len = curveLine.getTotalLength();
+    if (!reduced){
+      curveLine.style.transition = "none"; curveLine.style.strokeDasharray = len; curveLine.style.strokeDashoffset = len;
+      curveArea.style.opacity = "0"; curveLine.getBoundingClientRect();
+      curveLine.style.transition = "stroke-dashoffset .85s cubic-bezier(.22,1,.36,1),stroke .3s ease";
+      curveLine.style.strokeDashoffset = "0"; curveArea.style.opacity = "1";
+    } else {
+      curveLine.style.strokeDasharray = "none"; curveLine.style.strokeDashoffset = "0"; curveArea.style.opacity = "1";
+    }
+    chartPoints.innerHTML = "";
+    cfg.points.forEach(function(pt){
+      if (pt.p){
+        var ring = document.createElementNS(NS, "circle");
+        ring.setAttribute("cx", pt.x); ring.setAttribute("cy", pt.y); ring.setAttribute("r", "5");
+        ring.setAttribute("fill", "none"); ring.setAttribute("stroke", "var(--active)");
+        ring.setAttribute("stroke-width", "1.6"); ring.setAttribute("class", "beacon-ring");
+        chartPoints.appendChild(ring);
+      }
+      var dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", pt.x); dot.setAttribute("cy", pt.y); dot.setAttribute("r", "3.6");
+      dot.setAttribute("fill", "var(--card)"); dot.setAttribute("stroke", "var(--active)"); dot.setAttribute("stroke-width", "2.2");
+      chartPoints.appendChild(dot);
+      if (pt.t){
+        var lbl = document.createElementNS(NS, "text");
+        lbl.setAttribute("x", pt.x + pt.dx); lbl.setAttribute("y", pt.y + pt.dy);
+        lbl.setAttribute("font-size", "9.5"); lbl.setAttribute("font-weight", "700");
+        lbl.setAttribute("fill", "var(--active)"); lbl.setAttribute("class", "svg-mono");
+        lbl.textContent = pt.t; chartPoints.appendChild(lbl);
+      }
+    });
+  }
+
+  var safetyRaf = 0;
+  function animateSafety(target){
+    cancelAnimationFrame(safetyRaf);
+    ringArc.style.strokeDashoffset = (RING_CIRC * (1 - target / 100)).toFixed(2);
+    if (reduced){ state.safety = target; ringVal.textContent = String(target); return; }
+    var start = state.safety, t0 = performance.now();
+    (function step(now){
+      var p = Math.min(1, (now - t0) / 620);
+      var v = Math.round(start + (target - start) * (1 - Math.pow(1 - p, 3)));
+      ringVal.textContent = String(v); state.safety = v;
+      if (p < 1) safetyRaf = requestAnimationFrame(step);
+    })(t0);
+  }
+
+  function updateFlowUI(){
+    var dial = el("router-dial");
+    if (state.mode === "B"){
+      el("flow-badge").textContent = "100% immediate · Manual rollback";
+      el("router-pct").textContent = "100%";
+      el("v2-share").textContent = "100% · 1,420/hr"; el("v1-share").textContent = "0% · standby";
+      el("v2-meter").setAttribute("width", "90"); el("v1-meter").setAttribute("width", "0");
+      dial.style.transform = "rotate(-42deg)";
+      el("shield-mark").setAttribute("d", "M22 20V26M22 29.5V30");
+      el("stage-hint").textContent = "Stages skipped:";
+    } else {
+      var st = STAGES[state.stage];
+      el("flow-badge").textContent = st.label;
+      el("router-pct").textContent = st.pct + "%";
+      el("v2-share").textContent = st.pct + "% · " + st.v2Rate;
+      el("v1-share").textContent = (100 - st.pct) + "% · " + st.v1Rate;
+      el("v2-meter").setAttribute("width", String(st.v2Bar)); el("v1-meter").setAttribute("width", String(st.v1Bar));
+      dial.style.transform = "rotate(" + st.angle + "deg)";
+      el("shield-mark").setAttribute("d", "M18.5 25L21 27.5L26 22");
+      el("stage-hint").textContent = "Canary stage:";
+    }
+    document.querySelectorAll(".stage-pill").forEach(function(b){ b.classList.toggle("on", Number(b.getAttribute("data-stage")) === state.stage); });
+  }
+
+  function applyMode(mode){
+    state.mode = mode;
+    document.body.setAttribute("data-mode", mode);
+    el("btn-A").setAttribute("aria-selected", mode === "A" ? "true" : "false");
+    el("btn-B").setAttribute("aria-selected", mode === "B" ? "true" : "false");
+    var cfg = MODES[mode];
+    el("chart-badge").textContent = cfg.chartBadge;
+    el("guard-title").textContent = cfg.guardTitle; el("guard-sub").textContent = cfg.guardSub;
+    el("fact-guard").textContent = cfg.factGuard; el("fact-trade").textContent = cfg.factTrade;
+    el("val-blast").textContent = cfg.blastText; el("val-rollback").textContent = cfg.rollbackText; el("val-lift").textContent = cfg.liftText;
+    el("bar-blast").style.width = cfg.blastBar + "%"; el("bar-rollback").style.width = cfg.rollbackBar + "%"; el("bar-lift").style.width = cfg.liftBar + "%";
+    updateFlowUI(); drawChart(cfg, mode); animateSafety(cfg.safety);
+  }
+
+  var lenIn = pathIn.getTotalLength(), lenV2 = pathV2.getTotalLength(), lenV1 = pathV1.getTotalLength();
+  var packets = [];
+  for (var i = 0; i < 12; i++){
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("r", i % 3 === 0 ? "4.1" : "3.4");
+    packetLayer.appendChild(c);
+    packets.push({ el:c, phase:i / 12, speed:.24 + (i % 3) * .025, slot:i });
+  }
+  function renderPackets(dt){
+    var v2Slots = Math.round((state.mode === "B" ? 1 : STAGES[state.stage].v2Ratio) * packets.length);
+    for (var i = 0; i < packets.length; i++){
+      var p = packets[i]; p.phase = (p.phase + dt * p.speed) % 1;
+      var pt, color;
+      if (p.phase < .34){ pt = pathIn.getPointAtLength((p.phase / .34) * lenIn); color = "var(--info)"; }
+      else {
+        var t2 = (p.phase - .34) / .66;
+        if (p.slot < v2Slots){ pt = pathV2.getPointAtLength(t2 * lenV2); color = "var(--active)"; }
+        else { pt = pathV1.getPointAtLength(t2 * lenV1); color = "var(--legacy)"; }
+      }
+      p.el.setAttribute("cx", pt.x.toFixed(1)); p.el.setAttribute("cy", pt.y.toFixed(1));
+      p.el.setAttribute("fill", color); p.el.setAttribute("opacity", (p.phase < .06 || p.phase > .94) ? ".45" : ".96");
+    }
+  }
+
+  el("btn-A").addEventListener("click", function(){ applyMode("A"); });
+  el("btn-B").addEventListener("click", function(){ applyMode("B"); });
+  document.querySelectorAll(".stage-pill").forEach(function(b){
+    b.addEventListener("click", function(){ state.stage = Number(b.getAttribute("data-stage")); updateFlowUI(); if (reduced) renderPackets(0); });
+  });
+  document.addEventListener("artipeek:answer-saved", function(e){
+    var msg = el("saved-msg"); if (!msg || !e.detail) return;
+    msg.textContent = "Saved: " + e.detail.text; msg.classList.add("show");
+  });
+
+  requestAnimationFrame(function(){
+    applyMode("A"); renderPackets(0);
+    if (!reduced){
+      var last = performance.now();
+      (function loop(now){ var dt = Math.min(.05, (now - last) / 1000); last = now; renderPackets(dt); requestAnimationFrame(loop); })(last);
+    }
+  });
+})();
+</script>
+</body>
+</html>

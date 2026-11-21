@@ -11,7 +11,7 @@ Built with [Bun](https://bun.sh). It runs directly from TypeScript with no build
   <img src="docs/screenshots/phone-dark-code.png" width="200" alt="Highlighted code in dark mode">
 </p>
 
-<img src="docs/screenshots/desktop.png" alt="On a laptop the file list sits on the left, tabs on top. An email draft shows its status, read from the README.md next to it; its own inline script ran in the sandbox">
+<img src="docs/screenshots/desktop-html.webp" alt="On a laptop the file list sits on the left, tabs on top. An agent's HTML explainer runs in the sandbox: animated SVG traffic routing, a chart that draws itself, a safety ring, an Option A/B toggle and answer buttons. Its status label comes from the README.md next to it">
 
 <img src="docs/screenshots/desktop-decisions.png" alt="The Decisions tab: open decisions of every folder, oldest first, an urgent one with its deadline, links between decisions, answer options, and the outline on the right">
 
@@ -118,7 +118,7 @@ artipeek renders files on the server and streams live updates to your browser ov
 ### File rendering
 
 - **Markdown (`.md`)**: GitHub-style formatting (tables, task lists, syntax-highlighted code, footnotes, heading anchors), YAML front matter rendered as a small table, relative links and images, and Obsidian `[[name]]` wikilinks.
-- **HTML (`.html`)**: renders standalone pages such as email drafts and explainers inside a sandboxed frame. Inline scripts (animations, toggles) run in an opaque origin with no network access, so the page cannot read your login cookie, read other files, load remote assets, or navigate away. When the file changes and reloads, artipeek restores scroll position (and typed text in folders with answers) via `sessionStorage`. Links to other files inside artipeek open as in-app tabs through a small helper script. Opening the file directly with **raw** disables all scripts.
+- **HTML (`.html`)**: renders standalone pages such as email drafts and explainers inside a sandboxed frame. Inline scripts (animations, toggles) run in an opaque origin with no network access, so the page cannot read your login cookie, read other files, load remote assets, or navigate away. See [`docs/examples/explainer.html`](docs/examples/explainer.html) for a self-contained example (the page in the screenshot). When the file changes and reloads, artipeek restores scroll position (and typed text in folders with answers) via `sessionStorage`. Links to other files inside artipeek open as in-app tabs through a small helper script. Opening the file directly with **raw** disables all scripts.
 - **Other files**: text and source files get syntax highlighting, images display inline, and other binaries show file size and a download link.
 - **File-type icons**: each file shows an icon for its type (Markdown, HTML, code by language, shell, config, images, PDF, tables, archives, diffs, SQL, media, lock files, text). Folders show an open or closed folder icon (no arrows); tap to expand or collapse.
 

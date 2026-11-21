@@ -42,12 +42,12 @@ flowchart TB
   agents <-->|"artipeek-decide / /api/ (folder token)"| ap
   ap -.->|"answers.jsonl + commit + after (optional)"| repo
   ap -->|"live SSE + read-only pages"| you
-  you -->|"confirmed answer, Explain this, or a file edit"| ap
+  you -->|"confirmed answer, Explain this, a file edit, or ticked action steps"| ap
   ap -.->|"new / urgent alert"| apns
   apns -.->|"push + quick buttons"| you
 ```
 
-Agents raise and update questions in the [Decision hub](#decision-hub) using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers. Only you can answer, via artipeek's confirm sheet (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
+Agents raise and update questions in the [Decision hub](#decision-hub), and hand-work checklists as [Actions](#actions), using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers. Only you can answer, via artipeek's confirm sheet (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
 
 ```mermaid
 sequenceDiagram
@@ -185,6 +185,19 @@ Spotted something to change in a file an agent wrote? Tap **edit** next to **raw
 - **Where**: folders with an agent, i.e. with `answers` set or an agent token (`artipeek decisions token <folder>`). Text files up to 512 kB (no images or binaries); a file's CRLF line endings are kept.
 - **Who**: only you, under the same rules as answers (a Cloudflare Access login or a device in `answerDevices`, never plain `127.0.0.1`).
 - **How the agent hears it**: like an answer. In folders with `answers` set, one line in the answers file (`"kind": "edit"`, `"id": "E3"`, `"page"` = the file, text starting with `EDIT:`), a commit and the `after` command. Always in the hub, through `artipeek-decide answers`, `artipeek-decide edits` and `GET /api/edits/<folder>`. The agent reads it with `artipeek-decide edit show E3` (the diff; `--text` gives your whole new text) and closes it with `artipeek-decide edit done E3 "note"` or `edit decline E3 "why"`. See [docs/decisions-for-agents.md](docs/decisions-for-agents.md#edit-requests).
+
+## Actions
+
+Some answers leave **you** with work only you can do: run a script on a server after 22:00, post a notice, reconnect an account. Agents raise these as **actions**: cards on the **Actions** tab (`/actions`, `/r/<folder>/actions`, under Decisions in the file list, with counts; the home page has a card too), each a checklist of steps.
+
+- **Steps** say plainly what to do, where (machine, time), with links; a command to paste has a **Copy** button.
+- **Tick** each step as you go, or press **I've done all the steps** (with an optional note). Or press **Ask the agent to do it**: every action has it, and the agent tells you on the card if it can't.
+- **The agent checks**: ticked steps show *the agent is checking it*, then **✓ Verified** (with what it saw) or **Verify skipped** (it couldn't check). It can send a step back ("not done yet: …"). When every step is verified or skipped, it marks the action **done** and moves on (relays the answer, raises the next decision).
+- **Filters**: To do, With the agent (asked or checking), Done, All; Urgent; per project. Live, like the Decisions tab. An action that came out of a decision links both ways (D317 ↔ A3).
+- **How the agent hears it**: like an answer, with `"kind": "action"`, `"page": "artipeek:actions"` and a text starting with `ACTION:` (answers file + commit + `after` in folders with `answers` set; always `artipeek-decide answers`). Ticks are batched: artipeek waits a minute after the last one, so five ticks make one line and one commit, and a slip unticked within that minute never reaches the agent. Ticking the last step, "all done" and "ask the agent" go out at once.
+- **Who**: only you, under the same rules as answers. Agents raise and close actions with their token (`artipeek-decide action …`), never tick for you. A new action is pushed to the iOS app (no buttons; a tap opens it).
+
+See [docs/decisions-for-agents.md](docs/decisions-for-agents.md#actions-work-only-the-person-can-do) for the agent side.
 
 ## Answer buttons (optional)
 
@@ -410,7 +423,8 @@ All tests use temporary folders and a temporary config—never your real reposit
 | `bun run test:decisions` | Browser tests (Chromium): agent token API auth and restrictions, single-stream folder scoping, queue/history order, pagination (30/page), urgency, outline, cross-decision links, filters, jump-free live updates (desktop and phone), notes/picks survival, multi-question answers, explainer flow, all-folders view, external DB writes, `decisions.html` redirect. |
 | `bun run test:tabs` | Browser tests (Chromium): tab opening/switching, sidebar highlight tracking, cached tab scroll position, preserved HTML iframes, links inside HTML, Back navigation, live updates on hidden tabs, closing, reload persistence, lazy folder loading, multi-folder tabs, single Decisions tab, per-browser-tab lists, phone viewport. |
 | `bun run test:edits` | Edit requests (Chromium): who may send (not 127.0.0.1, not cross-site, not folders without an agent), preview vs send, the file left untouched, the answers line + commit, the agent API and `artipeek-decide edit`, replacing, done/declined/withdrawn, done by itself, stale edits refused, CRLF kept; in the browser: drafts across reloads, a file changing under you, the sheet (untrusted clicks ignored), live bar and file-list mark. |
-| `bun run test:push` | Fake local HTTP/2 APNs server checking ES256 auth: registration rules, single push per new/urgent decision, silent history/imports, restart persistence, `public.roots` scoping, dead token removal, payload fields (`title`, `body`, `badge`, `thread-id`, `data`), and test push. |
+| `bun run test:actions` | Actions (Chromium): the agent API and `artipeek-decide action`, ids unique with decisions, links both ways with a decision, who may tick (not 127.0.0.1, not cross-site), ticks batched into one answers line + commit (a slip never sent), the line's shape and `ACTION:` text, untick while checking, verified/skipped/back to todo, done only when every step is checked, "all done" with a note, "ask the agent" and hand back, steps rewritten without losing ticks, ticks waiting at a restart; in the browser: tick, live checking/verified, the sheet (untrusted clicks ignored), Decisions ⇄ Actions links and tabs, phone width. |
+| `bun run test:push` | Fake local HTTP/2 APNs server checking ES256 auth: registration rules, single push per new/urgent decision and per new action, silent history/imports, restart persistence, `public.roots` scoping, dead token removal, payload fields (`title`, `body`, `badge`, `thread-id`, `data`), and test push. |
 
 Browser tests require Chromium (set `CHROME_PATH` if it is not at `/usr/bin/chromium`).
 

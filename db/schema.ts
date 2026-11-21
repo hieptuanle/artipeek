@@ -128,3 +128,78 @@ export const pushSent = sqliteTable("push_sent", {
   at: text("at").notNull(),
   sent: integer("sent").notNull().default(0), // devices it reached
 }, (t) => [primaryKey({ columns: [t.project, t.decisionId, t.kind] })]);
+
+// Actions: work only the person can do (run a script on a server, post a notice, reconnect an account), raised by an
+// agent with a checklist of steps. The person ticks steps (or says all are done, or asks the agent to do it for them);
+// the agent hears that like an answer, checks each ticked step and marks it verified or "verify skipped", then marks the
+// action done and decides what comes next. Action status (the hub keeps it in step with the steps):
+//   open       waiting for the person (some step still to do)
+//   agent      the person asked the agent to do it instead (the agent can hand it back: open, with a note)
+//   checking   every step is ticked; the agent is verifying (it marks the action done when it's through)
+//   done       the agent closed it
+//   withdrawn  the agent dropped it (moot)
+export const ACTION_STATUSES = ["open", "agent", "checking", "done", "withdrawn"] as const;
+export type ActionStatus = (typeof ACTION_STATUSES)[number];
+// A step: todo → done (the person ticked it; the agent hears it after a short wait, so a slip can be unticked first)
+// → checking (the agent has heard it and is verifying) → verified | skipped (the agent couldn't verify it). The agent
+// can also send a step back to todo with a note (not done after all). The person can untick done and checking steps.
+export const STEP_STATES = ["todo", "done", "checking", "verified", "skipped"] as const;
+export type StepState = (typeof STEP_STATES)[number];
+export const actions = sqliteTable("actions", {
+  project: text("project").notNull(),
+  id: text("id").notNull(), // A1, A2…: unique within the project (decisions and edits included), never reused
+  title: text("title").notNull(),
+  lane: text("lane"),
+  context: text("context").notNull().default(""), // Markdown (no raw HTML)
+  links: text("links", { mode: "json" }).$type<Link[]>().notNull().default([]),
+  deadline: text("deadline"),
+  urgent: integer("urgent", { mode: "boolean" }).notNull().default(false),
+  status: text("status").$type<ActionStatus>().notNull().default("open"),
+  resolution: text("resolution"), // the agent's latest word on it ("Verified, relayed to the hub as D320")
+  agentAskedAt: text("agent_asked_at"), // the person asked the agent to do it (null: not, or handed back)
+  agentNote: text("agent_note"), // …with this note
+  agentBy: text("agent_by"),
+  agentHeard: integer("agent_heard", { mode: "boolean" }).notNull().default(true), // that request went out to the agent
+  personNote: text("person_note"), // the person's note with "all done", until it goes out to the agent
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.project, t.id] }),
+  index("actions_created").on(t.createdAt),
+  index("actions_status").on(t.status),
+]);
+export const actionSteps = sqliteTable("action_steps", {
+  project: text("project").notNull(),
+  actionId: text("action_id").notNull(),
+  n: integer("n").notNull(), // 1, 2, 3…
+  text: text("text").notNull(), // Markdown: what to do
+  command: text("command"), // to copy and run as it is
+  where: text("where_to"), // where to run it ("db-server, after 22:00")
+  links: text("links", { mode: "json" }).$type<Link[]>().notNull().default([]),
+  state: text("state").$type<StepState>().notNull().default("todo"),
+  told: text("told").$type<"todo" | "done">().notNull().default("todo"), // what the agent last heard: ticked (done) or not
+  doneAt: text("done_at"),
+  doneBy: text("done_by"),
+  checkedAt: text("checked_at"), // when the agent last set its state
+  note: text("note"), // the agent's note (what it checked, why it skipped, what is still missing)
+}, (t) => [primaryKey({ columns: [t.project, t.actionId, t.n] })]);
+// The decisions an action came out of (D317 → A3). Shown on both cards.
+export const actionRelations = sqliteTable("action_relations", {
+  project: text("project").notNull(),
+  actionId: text("action_id").notNull(),
+  toProject: text("to_project").notNull(),
+  toId: text("to_id").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.project, t.actionId, t.toProject, t.toId] }),
+  index("action_relations_to").on(t.toProject, t.toId),
+]);
+// What the agent was told, one row per batch (ticks a short while apart go out together): GET /api/answers (kind
+// "action") and, in folders with an answers file, one line there.
+export const actionSignals = sqliteTable("action_signals", {
+  uid: text("uid").primaryKey(),
+  project: text("project").notNull(),
+  actionId: text("action_id").notNull(),
+  at: text("at").notNull(),
+  by: text("by").notNull(),
+  text: text("text").notNull(), // always starts with ACTION:
+}, (t) => [index("action_signals_project").on(t.project, t.at)]);

@@ -9,6 +9,8 @@
 //   public listener). Agents write decisions; only the person answers them.
 // - Edit requests: /r/<folder>/edit/<path> lets the person change a text file, and POST /r/<folder>/edit hands the new
 //   text to the folder's agent (like an answer). artipeek never writes the file; the agent does.
+// - Actions (actions/web.ts): checklists of work only the person can do, raised by agents. /actions pages; the person
+//   ticks steps or asks the agent to do it (POST /r/<folder>/action), and the agent hears it like an answer.
 // - Listens on 127.0.0.1 and, if enabled, on this machine's Tailscale IP, where every
 //   request is checked with `tailscale whois` against an allow-list of devices.
 // - Optional public listener (config "public") for Cloudflare Tunnel: every request needs a valid
@@ -31,6 +33,7 @@ import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
 import { openHub, sha256, editLine, type Edit } from "./db/store.ts";
 import { editDiff } from "./edits/diff.ts";
 import { createDecisionsWeb, DECISIONS_CSS, DECISIONS_JS } from "./decisions/web.ts";
+import { createActionsWeb } from "./actions/web.ts";
 import { createPush, type PushConfig } from "./push/notify.ts";
 
 // ---------- args + config ----------
@@ -727,10 +730,14 @@ function renderRecent(scope: Scope, active: Root | null, current: string): strin
 }
 // The file list: Decisions, Recent, then every folder; a folder opens to its files (loaded when opened, except the
 // one in view).
-function renderNav(scope: Scope, active: Root | null, current: string, sort: Sort, onDecisions: boolean): string {
-  const dc = dec.counts(scope);
-  const open = Object.values(dc).reduce((n, c) => n + c.open, 0), urgent = Object.values(dc).reduce((n, c) => n + c.urgent, 0);
-  const decLink = `<a class="navdec${onDecisions ? " current" : ""}" href="/decisions"><span class="fi fi-dec" aria-hidden="true"></span><span class="name">Decisions</span><span class="nd-open" title="open">${open || ""}</span><span class="nd-urg" title="urgent">${urgent || ""}</span></a>`;
+type HubTab = "dec" | "act" | "";
+function renderNav(scope: Scope, active: Root | null, current: string, sort: Sort, on: HubTab): string {
+  const dc = dec.counts(scope), ac = act.counts(scope);
+  const sum = (c: Record<string, Record<string, number>>, k: string) => Object.values(c).reduce((n, x) => n + (x[k] ?? 0), 0);
+  const open = sum(dc, "open"), urgent = sum(dc, "urgent");
+  const decLink = `<a class="navdec${on === "dec" ? " current" : ""}" href="/decisions"><span class="fi fi-dec" aria-hidden="true"></span><span class="name">Decisions</span><span class="nd-open" title="open">${open || ""}</span><span class="nd-urg" title="urgent">${urgent || ""}</span></a>`
+    // Actions: to do (waiting for the person), urgent among them, and with the agent
+    + `<a class="navdec navact${on === "act" ? " current" : ""}" href="/actions"><span class="fi fi-dec fi-act" aria-hidden="true"></span><span class="name">Actions</span><span class="nd-open" title="to do">${sum(ac, "open") || ""}</span><span class="nd-urg" title="urgent">${sum(ac, "urgent") || ""}</span><span class="nd-agent" title="with the agent">${sum(ac, "agent") || ""}</span></a>`;
   const nodes = visibleRoots(scope).map((r) => {
     const here = r === active;
     return `<li class="dir rootnode"><details data-root="${esc(r.name)}"${here ? " open" : ""}><summary>${DIR_ICON}<span class="name">${esc(r.name)}</span>${statusBadge(r.dirStatus.get(""))}</summary><ul class="tree" data-root="${esc(r.name)}"${here ? "" : " data-lazy"}>${here ? renderTree(r, current, sort) : ""}</ul></details></li>`;
@@ -810,13 +817,17 @@ aside header { padding:10px 12px 8px; border-bottom:1px solid var(--line); }
 #tree a.navdec .nd-open, #tree a.navdec .nd-urg { font-size:11px; font-weight:600; padding:0 6px; border-radius:999px; line-height:17px; }
 #tree a.navdec .nd-open { margin-left:auto; background:var(--cur); color:var(--accent); }
 #tree a.navdec .nd-urg { background:#cf222e; color:#fff; }
-#tree a.navdec .nd-open:empty, #tree a.navdec .nd-urg:empty { display:none; }
+#tree a.navdec .nd-open:empty, #tree a.navdec .nd-urg:empty, #tree a.navdec .nd-agent:empty { display:none; }
+#tree a.navdec + a.navact { margin-top:-4px; }
+#tree a.navdec .name { flex:1; }
+#tree a.navact .fi-act::after { content:"✓"; }
+#tree a.navdec .nd-agent { font-size:11px; font-weight:600; padding:0 6px; border-radius:999px; line-height:17px; border:1px solid var(--line); color:var(--muted); }
 #tree ul.rootlist { padding-left:4px; }
 #tree li.rootnode > details > summary { font-weight:600; }
 #tree li.rootnode > details > ul.tree { padding-left:12px; }
 #tree ul.tree[data-lazy]:empty::before { content:"Loading…"; display:block; padding:2px 8px; color:var(--muted); font-style:italic; }
 #tree .rroot { flex:none; font-size:10.5px; color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:0 5px; max-width:90px; overflow:hidden; text-overflow:ellipsis; }
-#tree a.navdec[hidden], #tree details.recent[hidden], #tree li.rootnode[hidden] { display:none; }
+#tree a.navdec[hidden], #tree a.navact[hidden], #tree details.recent[hidden], #tree li.rootnode[hidden] { display:none; }
 details.roots { position:relative; flex:1; min-width:0; }
 details.roots > summary { cursor:pointer; font-weight:600; font-size:14px; list-style:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 details.roots > summary::after { content:" ▾"; color:var(--muted); font-weight:400; }
@@ -1012,15 +1023,18 @@ function shell(opts: { title: string; bodyClass: string; data?: Record<string, s
 }
 
 // The app: the file list (every folder) on the left, tabs, and one tab's pane (a file, or Decisions).
-function appAside(scope: Scope, active: Root | null, current: string, sort: Sort, onDecisions: boolean): string {
+function appAside(scope: Scope, active: Root | null, current: string, sort: Sort, onDecisions: HubTab): string {
   return `<aside><header><div class="headrow"><a class="brand" href="/">artipeek</a><span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
 <nav id="tree">${renderNav(scope, active, current, sort, onDecisions)}</nav></aside>`;
 }
 function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope, mode: "view" | "edit" = "view"): string {
-  return shell({ title: (mode === "edit" ? "Edit " : "") + (current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name), bodyClass: "app", data: { kind: "file", base: root.base, path: current, mode }, aside: appAside(scope, root, current, sort, false), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
+  return shell({ title: (mode === "edit" ? "Edit " : "") + (current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name), bodyClass: "app", data: { kind: "file", base: root.base, path: current, mode }, aside: appAside(scope, root, current, sort, ""), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
 }
 function decisionsPage(scope: Scope, q: string, paneHtml: string, nonce: string, sort: Sort): string {
-  return shell({ title: "Decisions", bodyClass: "app", data: { kind: "dec", q }, aside: appAside(scope, null, "", sort, true), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${paneHtml}</section>`, nonce });
+  return shell({ title: "Decisions", bodyClass: "app", data: { kind: "dec", q }, aside: appAside(scope, null, "", sort, "dec"), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${paneHtml}</section>`, nonce });
+}
+function actionsPage(scope: Scope, q: string, paneHtml: string, nonce: string, sort: Sort): string {
+  return shell({ title: "Actions", bodyClass: "app", data: { kind: "act", q }, aside: appAside(scope, null, "", sort, "act"), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${paneHtml}</section>`, nonce });
 }
 
 function homePage(nonce: string, scope: Scope): string {
@@ -1028,11 +1042,14 @@ function homePage(nonce: string, scope: Scope): string {
   const withDec = Object.entries(dc).filter(([, c]) => c.all > 0);
   const open = withDec.reduce((n, [, c]) => n + c.open, 0), urgent = withDec.reduce((n, [, c]) => n + c.urgent, 0);
   const decCard = withDec.length ? `<section class="rootcard deccard"><h2><a href="/decisions">Decisions</a><span class="count">${open} open${urgent ? ` · <b class="hot">${urgent} urgent</b>` : ""}</span></h2><ul>${withDec.map(([p, c]) => `<li><a href="/r/${esc(encodeURIComponent(p))}/decisions"><span class="name">${esc(p)}</span><span class="age">${c.open} open${c.urgent ? `, <b class="hot">${c.urgent} urgent</b>` : ""}</span></a></li>`).join("")}</ul></section>` : "";
+  const ac = Object.entries(act.counts(scope)).filter(([, c]) => c.all > 0);
+  const todo = ac.reduce((n, [, c]) => n + c.open, 0), aurg = ac.reduce((n, [, c]) => n + c.urgent, 0), withAgent = ac.reduce((n, [, c]) => n + c.agent, 0);
+  const actCard = ac.length ? `<section class="rootcard deccard actcard"><h2><a href="/actions">Actions</a><span class="count">${todo} to do${aurg ? ` · <b class="hot">${aurg} urgent</b>` : ""}${withAgent ? ` · ${withAgent} with the agent` : ""}</span></h2><ul>${ac.map(([p, c]) => `<li><a href="/r/${esc(encodeURIComponent(p))}/actions"><span class="name">${esc(p)}</span><span class="age">${c.open} to do${c.urgent ? `, <b class="hot">${c.urgent} urgent</b>` : ""}${c.agent ? `, ${c.agent} with the agent` : ""}</span></a></li>`).join("")}</ul></section>` : "";
   const cards = visibleRoots(scope).map((r) => {
     const rec = r.recent(5).map((e) => `<li><a href="${r.base}/view/${encPath(e.rel)}">${iconFor(e.rel, extOf(e.rel))}<span class="name">${esc(e.rel)}</span>${statusBadge(r.rowStatus(e.rel), e.rel)}${ageTag(e.mtime)}</a></li>`).join("");
     return `<section class="rootcard"><h2><a href="${r.base}/">${esc(r.name)}</a><span class="count">${r.files.size} files</span></h2><ul>${rec}</ul></section>`;
   }).join("");
-  return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${decCard}${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });
+  return shell({ title: "Folders", bodyClass: "home", main: `<div class="home"><h1>artipeek</h1>${decCard}${actCard}${cards || '<p class="note">No folders in the config.</p>'}</div>`, nonce });
 }
 
 // ---------- http ----------
@@ -1076,6 +1093,7 @@ const decode = (s: string): string | null => { try { return decodeURIComponent(s
 type Who = { email: string } | { device: string } | null;
 
 const dec = createDecisionsWeb({ hub, visibleRoots, broadcast: toAll });
+const act = createActionsWeb({ hub, visibleRoots, broadcast: toAll });
 // A device registered through the public listener only hears about the public folders.
 const PUBLIC_ROOTS: Scope = new Set((config0.public?.roots ?? []).filter((n) => typeof n === "string"));
 const pushApns = config0.push?.apns;
@@ -1090,12 +1108,15 @@ const answerBy = (who: Who) => who && "email" in who ? who.email : who && "devic
 async function handle(req: Request, scope: Scope = null, who: Who = null): Promise<Response> {
   const p0 = new URL(req.url).pathname;
   // Agents' decision API: a project token on every call; never on the public listener (see decisions/web.ts).
+  if (p0.startsWith("/api/actions/")) return act.api(req, p0, scope);
   if (p0.startsWith("/api/")) return dec.api(req, p0, scope);
   if (req.method === "POST") {
     const am = /^\/r\/([^/]+)\/answer$/.exec(p0);
     if (am) return answer(req, am[1], scope, who);
     const em = /^\/r\/([^/]+)\/edit$/.exec(p0);
     if (em) return submitEdit(req, em[1], scope, who);
+    const xm = /^\/r\/([^/]+)\/action$/.exec(p0);
+    if (xm) return actionPost(req, xm[1], scope, who);
     // the iOS app's push registration: the person only, like answers (see push/notify.ts)
     if (p0.startsWith("/_/push/")) return push.http(req, p0, answerBy(who), who && "email" in who ? "public" : "all");
   }
@@ -1126,6 +1147,16 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
     return new Response(renderRecent(scope, null, ""), { headers: HTML });
   }
   if (p.startsWith("/decisions/part/")) return dec.part(url, scope, !!answerBy(who)) ?? notFound();
+  if (p.startsWith("/actions/part/")) return act.part(url, scope, !!answerBy(who)) ?? notFound();
+  {
+    const f = act.pageFilter(url, scope);
+    if (f) { // the app, with the Actions tab open
+      const nonce = randomBytes(16).toString("base64");
+      const q = new URLSearchParams({ status: f.status, ...(f.urgent ? { urgent: "1" } : {}), ...(f.project ? { project: f.project } : {}) }).toString();
+      const { sort } = sortFrom(req, url);
+      return new Response(actionsPage(scope, q, act.pane(scope, f, !!answerBy(who)), nonce, sort), { headers: { ...HTML, "Content-Security-Policy": pageCsp(nonce) } });
+    }
+  }
   {
     const f = dec.pageFilter(url, scope);
     if (f) { // the app, with the Decisions tab open
@@ -1453,6 +1484,81 @@ async function deliverEdit(root: Root, e: Edit, what: "sent" | "withdrawn", by: 
     console.log(`artipeek: edit ${e.id} for ${root.name} not in the answers file: ${(err as Error).message}`);
     return false;
   }
+}
+
+// ---------- actions: what the person sends ----------
+// The Actions tab (actions/web.ts) posts here: tick or untick a step, "I've done all the steps", "Ask the agent to do it".
+// Same rules as answer(): the person only (a login or an answer device), only from artipeek's own page. The agent hears
+// it like an answer (the hub's GET /api/answers, kind "action"; in folders with "answers" set, one line in the answers
+// file + commit + the after command), but not at every tick: ticks wait ACTION_WAIT_MS after the last one (at most
+// ACTION_MAX_WAIT_MS after the first), so five ticks in a row make one line, one commit, one after-run, and a slip can
+// be unticked before the agent hears of it. All steps ticked, "all done" and "ask the agent" go out at once.
+const ACTION_WAIT_MS = Number(process.env.ARTIPEEK_ACTION_WAIT_MS) || 60_000;
+const ACTION_MAX_WAIT_MS = Math.max(ACTION_WAIT_MS, Number(process.env.ARTIPEEK_ACTION_MAX_WAIT_MS) || 5 * 60_000);
+const actionTimers = new Map<string, { t: ReturnType<typeof setTimeout>; first: number }>();
+function queueAction(project: string, id: string, now = false) {
+  const k = `${project}\u0000${id}`;
+  const old = actionTimers.get(k);
+  if (old) clearTimeout(old.t);
+  const first = old?.first ?? Date.now();
+  const wait = now ? 0 : Math.max(0, Math.min(ACTION_WAIT_MS, first + ACTION_MAX_WAIT_MS - Date.now()));
+  actionTimers.set(k, { first, t: setTimeout(() => { actionTimers.delete(k); void flushAction(project, id); }, wait) });
+}
+async function flushAction(project: string, id: string) {
+  let sig;
+  try { sig = hub.takeActionSignal(project, id); } catch (e) { console.log(`artipeek: action ${id} for ${project} not sent: ${(e as Error).message}`); return; }
+  if (!sig) return;
+  const root = roots.get(project);
+  const cfg = root && answersFor.get(root.name);
+  if (!root || !cfg) { console.log(`artipeek: action ${id} sent in the hub for ${project} by ${sig.by}`); return; }
+  const rec: Record<string, string> = { at: sig.at, uid: sig.uid, id, text: sig.text, by: sig.by, page: "artipeek:actions", kind: "action" };
+  const job = (answerQueue.get(root.name) ?? Promise.resolve()).then(() => saveAnswer(root, cfg, rec));
+  answerQueue.set(root.name, job.catch(() => {}));
+  try {
+    const committed = await job;
+    console.log(`artipeek: action ${id} saved in ${root.name} by ${sig.by}${committed ? ", committed" : ", not committed"}`);
+  } catch (err) {
+    console.log(`artipeek: action ${id} for ${root.name} not in the answers file: ${(err as Error).message}`);
+  }
+}
+// What was ticked before a restart still goes out.
+for (const x of hub.pendingActions()) queueAction(x.project, x.id);
+
+// POST /r/<folder>/action {id, op: "tick" | "untick" | "all" | "agent", step?, note?}
+async function actionPost(req: Request, rawName: string, scope: Scope, who: Who): Promise<Response> {
+  const name = decode(rawName);
+  const root = name && (!scope || scope.has(name)) ? roots.get(name) : undefined;
+  if (!root) return notFound();
+  const by = answerBy(who);
+  if (!by) return jsonRes(403, { ok: false, error: "actions need the public link (login) or a device in answerDevices" });
+  if (req.headers.get("sec-fetch-site") !== "same-origin" || req.headers.get("x-artipeek") !== "action")
+    return jsonRes(403, { ok: false, error: "not from artipeek's page" });
+  if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return jsonRes(415, { ok: false, error: "JSON only" });
+  const raw = await req.text();
+  if (raw.length > 8192) return jsonRes(413, { ok: false, error: "too big" });
+  let b: any;
+  try { b = JSON.parse(raw); } catch { return jsonRes(400, { ok: false, error: "bad JSON" }); }
+  const id = typeof b?.id === "string" ? b.id : "";
+  if (!ANSWER_ID_RE.test(id) || !hub.actionHas(root.name, id)) return jsonRes(404, { ok: false, error: `${id} is not an action of ${root.name}` });
+  const note = typeof b.note === "string" ? b.note.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 2000) || null : null;
+  const step = Number(b.step);
+  try {
+    if (b.op === "tick" || b.op === "untick") {
+      if (!Number.isInteger(step) || step < 1) return jsonRes(400, { ok: false, error: "which step?" });
+      const changed = hub.tickStep(root.name, id, step, b.op === "tick", by);
+      if (changed) queueAction(root.name, id, hub.action(root.name, id)!.steps.every((x) => x.state !== "todo"));
+    } else if (b.op === "all") {
+      hub.tickAll(root.name, id, by, note);
+      queueAction(root.name, id, true);
+    } else if (b.op === "agent") {
+      hub.askAgent(root.name, id, by, note);
+      queueAction(root.name, id, true);
+    } else return jsonRes(400, { ok: false, error: "op must be tick, untick, all or agent" });
+  } catch (e) {
+    return jsonRes(409, { ok: false, error: (e as Error).message });
+  }
+  const a = hub.action(root.name, id)!;
+  return jsonRes(200, { ok: true, at: a.updatedAt, status: a.status });
 }
 
 const server = Bun.serve({ hostname: HOST, port: PORT, idleTimeout: 0 /* SSE streams stay open */, fetch: (req) => handle(req) });

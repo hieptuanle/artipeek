@@ -15,13 +15,25 @@ const usage = `artipeek-decide: raise and keep decisions in artipeek's decision 
   update <id> --file f.json                  change fields (only the ones given)
   update <id> [quick flags]
   note <id> "text" [--done]                  add a dated update ("-" reads stdin); --done marks it as done
-  answers [--since <ISO>] [--json]           what the person sent from the page (answers, explainer and edit requests)
+  answers [--since <ISO>] [--json]           what the person sent from the page (answers, explainer and edit requests, action ticks)
 
 Edit requests (the person edited a file on artipeek; you update the file yourself, then close the request):
   edits [--status pending|done|declined|superseded|withdrawn|all] [--json]   default: pending
   edit show <id> [--text | --base | --json]  the diff (default), the person's whole new text, or the file before
   edit done <id> ["note"]                    you updated the file (as asked, or adapted: say how in the note)
   edit decline <id> "why"                    you won't; the person sees why on the file
+
+Actions (work only the person can do, as a checklist; they tick steps or ask you to do it):
+  actions [--status open,agent,checking,done,withdrawn|all] [--json]   default: open,agent,checking
+  action add --file a.json                   new action (title, steps, from…; see docs/decisions-for-agents.md)
+  action add --title "…" --step "text" [--step "text :: command"]… [--from D317] [quick flags]
+  action show <id> [--json]                  steps with their states, what the person sent
+  action update <id> --file f.json | [quick flags, --step …]   (a ticked step keeps its text)
+  action step <id> <n> verified|skipped|checking ["note"]       you checked it (or couldn't: skipped)
+  action step <id> <n> todo "what is missing"                    not done after all: back to the person
+  action done <id> ["note"] [--force]        every step verified or skipped (--force: the rest as skipped)
+  action handback <id> "why"                 asked to do it, you can't: back to the person
+  action withdraw <id> "why"                 moot
 
 Quick flags:
   --title "…"  --lane ERP  --context "markdown" | --context-file f.md
@@ -40,7 +52,7 @@ Where it goes (first found):
 const argv = process.argv.slice(2);
 const flags = new Map<string, string[]>();
 const pos: string[] = [];
-const BOOL = new Set(["--json", "--urgent", "--not-urgent", "--done", "--text", "--base", "-h", "--help"]);
+const BOOL = new Set(["--json", "--urgent", "--not-urgent", "--done", "--text", "--base", "--force", "-h", "--help"]);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a.startsWith("-") && a !== "-") {
@@ -111,7 +123,24 @@ async function input(): Promise<Record<string, unknown>> {
     const [label, effect] = m[3].split(/\s+—\s+If\s+[^:]+:\s*/);
     return { value: m[1], label: label.trim(), ...(m[2] ? { recommended: true } : {}), ...(effect ? { effect: effect.trim() } : {}) };
   }) }];
+  if (has("--step")) o.steps = flags.get("--step")!.map((x) => { const i = x.indexOf(" :: "); return i < 0 ? { text: x } : { text: x.slice(0, i), command: x.slice(i + 4) }; });
   return o;
+}
+
+const STEP_MARK: Record<string, string> = { todo: "[ ]", done: "[x]", checking: "[?]", verified: "[✓]", skipped: "[-]" };
+function showAction(a: any) {
+  const t = (s: string | null) => s ? new Date(s).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  console.log(`${a.id}  [${a.status}${a.urgent ? ", urgent" : ""}]  ${a.title}`);
+  console.log(`  raised ${t(a.createdAt)}${a.deadline ? ` · deadline ${t(a.deadline)}` : ""}${a.lane ? ` · ${a.lane}` : ""}${a.from.length ? ` · from ${a.from.map((r: any) => (r.project !== a.project ? r.project + ":" : "") + r.id).join(", ")}` : ""}`);
+  if (a.agentAskedAt) console.log(`  THE PERSON ASKED YOU TO DO IT ${t(a.agentAskedAt)}${a.agentNote ? `: ${a.agentNote}` : ""}`);
+  for (const x of a.steps) {
+    console.log(`  ${STEP_MARK[x.state] ?? x.state} ${x.n}. ${x.text.split("\n")[0].slice(0, 160)}   (${x.state}${x.doneAt ? ` ${t(x.doneAt)} by ${x.doneBy}` : ""})`);
+    if (x.where) console.log(`        where: ${x.where}`);
+    if (x.command) console.log(`        $ ${x.command.split("\n").join("\n          ")}`);
+    if (x.note) console.log(`        note: ${x.note}`);
+  }
+  if (a.resolution) console.log(`  your note: ${a.resolution}`);
+  for (const g of a.signals.slice(0, 5)) console.log(`  sent ${t(g.at)} by ${g.by}: ${g.text}`);
 }
 
 function show(d: any) {
@@ -128,6 +157,7 @@ function show(d: any) {
   for (const n of d.notes) console.log(`  ${n.kind} ${t(n.at)}: ${n.body.split("\n")[0].slice(0, 120)}`);
   for (const a of d.answers) console.log(`  ${a.kind === "explain" ? "explainer request" : "ANSWER"} ${t(a.at)} by ${a.by} (uid ${a.uid}): ${a.text}`);
   if (d.resolution) console.log(`  resolution: ${d.resolution}`);
+  if (d.actions?.length) console.log(`  actions: ${d.actions.map((r: any) => `${r.id} (${r.status})`).join(", ")}`);
 }
 
 const [cmd, a1, a2] = pos;
@@ -167,7 +197,7 @@ switch (cmd) {
   case "answers": {
     const j = await call("GET", `/api/answers/${encodeURIComponent(project)}${flag("--since") ? `?since=${encodeURIComponent(flag("--since")!)}` : ""}`);
     if (has("--json")) console.log(JSON.stringify(j.answers, null, 1));
-    else for (const a of j.answers) console.log(`${a.at}  ${a.decisionId}  ${a.kind === "explain" ? "EXPLAIN " : a.kind === "edit" ? "EDIT " : ""}${a.uid}  by ${a.by}: ${a.text}`);
+    else for (const a of j.answers) console.log(`${a.at}  ${a.decisionId}  ${a.kind === "explain" ? "EXPLAIN " : a.kind === "edit" ? "EDIT " : a.kind === "action" ? "ACTION " : ""}${a.uid}  by ${a.by}: ${a.text}`);
     break;
   }
   case "edits": {
@@ -199,6 +229,40 @@ switch (cmd) {
     if (sub === "decline" && !text) die('edit decline <id> "why"');
     const e = (await call("PATCH", E, { status: sub === "done" ? "done" : "declined", note: text === "-" ? await stdinText() : text })).edit;
     console.log(`${e.id}: ${e.status}`);
+    break;
+  }
+  case "actions": {
+    const st = flag("--status");
+    const j = await call("GET", `/api/actions/${encodeURIComponent(project)}${st ? `?status=${encodeURIComponent(st)}` : ""}`);
+    if (has("--json")) console.log(JSON.stringify(j.actions, null, 1));
+    else if (!j.actions.length) console.log(`no ${st ?? "open"} actions`);
+    else for (const a of j.actions) console.log(`${a.id.padEnd(5)} ${a.status.padEnd(9)} ${a.steps.filter((x: any) => x.state !== "todo").length}/${a.steps.length} ${a.urgent ? "! " : "  "}${a.title}`);
+    break;
+  }
+  case "action": {
+    const [sub, id, x3, x4] = [a1, a2, pos[3], pos[4]];
+    const A = `/api/actions/${encodeURIComponent(project)}`;
+    const I = () => { if (!id) die(`action ${sub} <id>`); return `${A}/${encodeURIComponent(id)}`; };
+    const txt = async (v: string | undefined) => (v === "-" ? await stdinText() : v);
+    switch (sub) {
+      case "add": { const j = await call("POST", A, await input()); console.log(`${j.id} raised: ${url}${j.url}`); break; }
+      case "show": { const a = (await call("GET", I())).action; if (has("--json")) console.log(JSON.stringify(a, null, 1)); else showAction(a); break; }
+      case "update": { const a = (await call("PATCH", I(), await input())).action; console.log(`${a.id} updated (${a.status})`); break; }
+      case "step": {
+        if (!x3 || !/^\d+$/.test(x3) || !["verified", "skipped", "checking", "todo"].includes(x4 ?? "")) die('action step <id> <n> verified|skipped|checking|todo ["note"]');
+        const a = (await call("PATCH", `${I()}/steps/${x3}`, { state: x4, note: await txt(pos[5]) })).action;
+        console.log(`${a.id} step ${x3}: ${x4} (action ${a.status})`);
+        break;
+      }
+      case "done": case "handback": case "withdraw": {
+        const note = await txt(x3);
+        if (sub !== "done" && !note) die(`action ${sub} <id> "why"`);
+        const a = (await call("PATCH", I(), { status: sub === "done" ? "done" : sub === "handback" ? "open" : "withdrawn", note, ...(has("--force") ? { force: true } : {}) })).action;
+        console.log(`${a.id}: ${a.status}`);
+        break;
+      }
+      default: die("action add|show|update|step|done|handback|withdraw (artipeek-decide help)");
+    }
     break;
   }
   default: die(`unknown command ${cmd} (artipeek-decide help)`);

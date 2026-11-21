@@ -5,6 +5,7 @@
 //   /decisions/part/app.json                 open decisions as JSON, for the Watch app
 //   /api/decisions/<project>[/<id>[/notes]], /api/answers/<project>   agents, with the project's token
 //   /api/edits/<project>[/<id>]              edit requests the person sent (see server.ts "edit requests")
+//   (/api/actions/… is actions/web.ts; /api/answers lists what the person sent there too, kind "action")
 // Live changes go out through artipeek's one stream (/_/events), via deps.broadcast.
 // The API is never on the public listener. Agents create and change decisions; only the person (artipeek's own
 // sheet, see server.ts answer()) can answer them.
@@ -28,7 +29,7 @@ export type Deps = {
   broadcast: (project: string | null, event: string, data: unknown) => void;
 };
 
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 export const FILTERS: Record<string, string[] | null> = {
   open: ["open"], later: ["later"], answered: ["answered", "relayed"], closed: ["closed", "withdrawn"], all: null,
 };
@@ -45,7 +46,7 @@ export const isUrgent = (d: { status: string; urgent: boolean; deadline: string 
 // Server-side text for times; the page rewrites them in the viewer's own time zone.
 const p2 = (n: number) => String(n).padStart(2, "0");
 const fmtTime = (iso: string) => { const d = new Date(iso); return `${p2(d.getDate())}/${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
-const timeTag = (iso: string, rel = false) => `<time datetime="${esc(iso)}" data-ts${rel ? " data-rel" : ""}>${esc(fmtTime(iso))}</time>`;
+export const timeTag = (iso: string, rel = false) => `<time datetime="${esc(iso)}" data-ts${rel ? " data-rel" : ""}>${esc(fmtTime(iso))}</time>`;
 const domId = (project: string, id: string) => `d:${project}:${id}`;
 const isFileLink = (h: string) => /^\/r\/[^/]+\/(view|raw)\//.test(h);
 
@@ -69,18 +70,18 @@ function makeMd(project: string) {
   return md;
 }
 const mdCache = new Map<string, MarkdownIt>();
-const md = (project: string, src: string) => {
+export const md = (project: string, src: string) => {
   let m = mdCache.get(project);
   if (!m) { m = makeMd(project); mdCache.set(project, m); }
   return m.render(src);
 };
 
-function hrefOf(project: string, h: string): string {
+export function hrefOf(project: string, h: string): string {
   if (/^https?:/i.test(h)) return h;
   if (h.startsWith("/")) return h.replace(/^(\/r\/[^/]+)\/raw\//, "$1/view/");
   return `/r/${encodeURIComponent(project)}/view/${h.replace(/^\.\//, "")}`;
 }
-const linkAttrs = (href: string) => `href="${esc(href)}"${isFileLink(href) ? "" : ' target="_blank" rel="noopener noreferrer"'}`;
+export const linkAttrs = (href: string) => `href="${esc(href)}"${isFileLink(href) ? "" : ' target="_blank" rel="noopener noreferrer"'}`;
 
 function refs(label: string, list: Ref[], d: Full): string {
   if (!list.length) return "";
@@ -91,6 +92,13 @@ function refs(label: string, list: Ref[], d: Full): string {
     return `<a class="ref${r.title ? "" : " missing"}${r.status && r.status !== "open" ? " done" : ""}" href="#${esc(domId(r.project, r.id))}" data-ref="${esc(r.project)}/${esc(r.id)}" title="${esc(tip)}">${esc(text)}</a>`;
   }).join(", ");
   return `<span class="rel"><span class="rl">${label}</span> ${items}</span>`;
+}
+
+// Actions that came out of a decision: they open on the Actions tab.
+const ACT_STATUS: Record<string, string> = { open: "to do", agent: "asked the agent", checking: "checking", done: "done", withdrawn: "withdrawn" };
+function actionRefs(d: Full): string {
+  if (!d.actions.length) return "";
+  return `<span class="rel"><span class="rl">Actions</span> ${d.actions.map((r) => `<a class="xref${r.status === "done" || r.status === "withdrawn" ? " done" : ""}" href="/actions#a:${esc(r.project)}:${esc(r.id)}" title="${esc(`${r.title} (${ACT_STATUS[r.status] ?? r.status})`)}">${esc((r.project !== d.project ? `${r.project}:` : "") + r.id)}</a>`).join(", ")}</span>`;
 }
 
 // What the latest answer picked: "A", "A: note", or "Q1 A, Q2 —: note".
@@ -137,7 +145,7 @@ function explainerHtml(d: Full, root: RootLike | undefined): string {
 export function cardHtml(d0: Full, o: { root?: RootLike; visible: Set<string> }): string {
   // links to folders this listener doesn't show (the public one) are left out: not even their titles
   const seen = (l: Ref[]) => l.filter((r) => o.visible.has(r.project));
-  const d: Full = { ...d0, from: seen(d0.from), dependsOn: seen(d0.dependsOn), ledTo: seen(d0.ledTo), neededBy: seen(d0.neededBy) };
+  const d: Full = { ...d0, from: seen(d0.from), dependsOn: seen(d0.dependsOn), ledTo: seen(d0.ledTo), neededBy: seen(d0.neededBy), actions: d0.actions.filter((r) => o.visible.has(r.project)) };
   const key = `${d.project}/${d.id}`;
   const urgent = isUrgent(d);
   const open = d.status === "open" || d.status === "later";
@@ -146,7 +154,7 @@ export function cardHtml(d0: Full, o: { root?: RootLike; visible: Set<string> })
   const head = `<header class="dh" data-a="h"><div class="dl1"><a class="pj" href="/r/${esc(encodeURIComponent(d.project))}/decisions" data-project="${esc(d.project)}" title="Only ${esc(d.project)}">${esc(d.project)}</a><a class="did" href="#${esc(domId(d.project, d.id))}">${esc(d.id)}</a><span class="dst dst-${esc(d.status)}">${esc(STATUS_LABEL[d.status] ?? d.status)}</span><span class="durg">Urgent</span>${d.lane ? `<span class="lane">${esc(d.lane)}</span>` : ""}</div>`
     + `<h2 class="dt">${esc(d.title)}</h2>`
     + `<div class="dm">Raised ${timeTag(d.createdAt)}${d.deadline ? ` · <span class="ddl">Deadline ${timeTag(d.deadline, true)}</span>` : ""}${d.deadlineNote ? ` · <span class="ddn">${esc(d.deadlineNote)}</span>` : ""}</div>`
-    + `${d.from.length || d.dependsOn.length || d.ledTo.length || d.neededBy.length ? `<div class="drel">${[refs("From", d.from, d), refs("Depends on", d.dependsOn, d), refs("Led to", d.ledTo, d), refs("Needed by", d.neededBy, d)].filter(Boolean).join("")}</div>` : ""}</header>`;
+    + `${d.from.length || d.dependsOn.length || d.ledTo.length || d.neededBy.length || d.actions.length ? `<div class="drel">${[refs("From", d.from, d), refs("Depends on", d.dependsOn, d), refs("Led to", d.ledTo, d), refs("Needed by", d.neededBy, d), actionRefs(d)].filter(Boolean).join("")}</div>` : ""}</header>`;
   const ctx = d.context ? `<div class="dctx markdown" data-a="c">${md(d.project, d.context)}</div>` : "";
   const notes = d.notes.length ? `<ol class="dnotes">${d.notes.map((n) => `<li class="dn dn-${esc(n.kind)}" data-a="n${n.seq}"><div class="dnh">${n.kind === "done" ? "Done" : "Update"} ${timeTag(n.at)}</div><div class="markdown">${md(d.project, n.body)}</div></li>`).join("")}</ol>` : "";
   const noAns = d.ifNoAnswer && open ? `<p class="dna" data-a="na"><b>If no answer:</b> ${esc(d.ifNoAnswer)}</p>` : "";
@@ -300,7 +308,7 @@ export function createDecisionsWeb(deps: Deps) {
       if (m[1] === "answers") {
         if (req.method !== "GET" || id) return json(405, { ok: false, error: "GET /api/answers/<project>?since=<ISO>" });
         const since = url.searchParams.get("since") ?? undefined;
-        const all = [...hub.answersSince(project, since), ...hub.editNotices(project, since)].sort((a, b) => a.at.localeCompare(b.at));
+        const all = [...hub.answersSince(project, since), ...hub.editNotices(project, since), ...hub.actionNotices(project, since)].sort((a, b) => a.at.localeCompare(b.at));
         return json(200, { ok: true, answers: all });
       }
       if (m[1] === "edits") {

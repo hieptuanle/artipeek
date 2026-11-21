@@ -1,4 +1,5 @@
-// artipeek decision hub: the Decisions tab. The app (client/app.js) mounts it on the tab's pane:
+// artipeek decision hub: the Decisions tab, and the Actions tab (same pane shape; the pane's data-kind="act",
+// data-base="/actions" and data-filters say which). The app (client/app.js) mounts it on the tab's pane:
 //   const ctl = window.artipeekDecisions.mount(pane, { active: () => bool, setQuery: (q) => void })
 //   ctl.event(name, data)   live events from artipeek's stream: d, ref, all, tick
 //   ctl.onHide() / ctl.onShow(first) / ctl.apply(query) / ctl.jump(key) / ctl.destroy()
@@ -9,9 +10,6 @@
 // - Typed notes and per-question picks live here (and in sessionStorage), so patches and reloads keep them.
 (() => {
   const URGENT_MS = 24 * 3600 * 1000;
-  const NEWEST_FIRST = { answered: 1, closed: 1, all: 1 };
-  const STATUSES = { open: ["open"], later: ["later"], answered: ["answered", "relayed"], closed: ["closed", "withdrawn"], all: null };
-  const SKEY = "artipeek-dec";
   const p2 = (n) => String(n).padStart(2, "0");
   const fmt = (d) => p2(d.getDate()) + "/" + p2(d.getMonth() + 1) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
   function rel(ms) {
@@ -34,6 +32,12 @@
     const root = pane.querySelector(".dpane");
     if (!root) return null;
     const body = document.body;
+    const KIND = root.dataset.kind || "dec", BASE = root.dataset.base || "/decisions";
+    let STATUSES = { open: ["open"], later: ["later"], answered: ["answered", "relayed"], closed: ["closed", "withdrawn"], all: null };
+    try { if (root.dataset.filters) STATUSES = JSON.parse(root.dataset.filters); } catch (e) {}
+    const NEWEST_FIRST = {};
+    (root.dataset.newest || "answered,closed,all").split(",").forEach((k) => { NEWEST_FIRST[k] = 1; });
+    const SKEY = "artipeek-" + KIND;
     const $ = (s) => root.querySelector(s);
     const list = $(".dlist"), olist = $(".olist"), top = $(".dtop"), empty = $(".dempty"), oempty = $(".oempty"), moreBox = $(".dmorebox");
     const CAN = root.dataset.can === "1";
@@ -204,7 +208,7 @@
     };
 
     // ----- fetching -----
-    const listUrl = (offset, limit) => "/decisions/part/list?" + query() + "&offset=" + offset + (limit ? "&limit=" + limit : "");
+    const listUrl = (offset, limit) => BASE + "/part/list?" + query() + "&offset=" + offset + (limit ? "&limit=" + limit : "");
     let listSeq = 0;
     // replace = a new filter (start over at the top); otherwise patch what is there and keep your place.
     async function refreshList(replace) {
@@ -260,7 +264,7 @@
       if (pending.has(k)) { pending.set(k, true); return; }
       pending.set(k, false);
       try {
-        const r = await fetch("/decisions/part/card/" + encodeURIComponent(project) + "/" + encodeURIComponent(id));
+        const r = await fetch(BASE + "/part/card/" + encodeURIComponent(project) + "/" + encodeURIComponent(id));
         if (r.status === 404) { const c = byKey(k); if (c) steady(() => c.classList.add("out", "gone")); return; }
         if (!r.ok) return;
         const j = await r.json();
@@ -326,6 +330,7 @@
     }
     // The buttons of a card (in the list, or shown on top in a peek). True when the click was one of them.
     function cardClick(e, c, inPeek) {
+      if (KIND === "act") return actClick(e, c, inPeek);
       const k = c.dataset.k;
       const opt = e.target.closest(".opt");
       const btn = e.target.closest("[data-send],[data-own],[data-explain]");
@@ -354,6 +359,72 @@
       return true;
     }
 
+    // ----- actions: tick a step (sent at once, no sheet: a slip is unticked as easily), "I've done all the steps" and
+    // "Ask the agent to do it" (artipeek's own sheet). Only real clicks count.
+    function post(o) {
+      return fetch("/r/" + encodeURIComponent(o.project) + "/action", { method: "POST", headers: { "Content-Type": "application/json", "X-Artipeek": "action" }, body: JSON.stringify({ id: o.id, op: o.op, step: o.step, note: o.note }) })
+        .then((r) => r.json().catch(() => ({})).then((j) => { if (!r.ok || !j.ok) throw new Error(j.error || "HTTP " + r.status); return j; }));
+    }
+    function flashMsg(c, text) {
+      let m = c.querySelector(".amsg");
+      if (!m) { m = document.createElement("p"); m.className = "amsg"; m.setAttribute("aria-live", "polite"); const b = c.querySelector(".aacts") || c; b.appendChild(m); }
+      m.textContent = text;
+    }
+    function askAct(o) {
+      if (sheet) sheet.remove();
+      const s = document.createElement("div");
+      s.className = "answersheet"; s.setAttribute("role", "dialog"); s.setAttribute("aria-modal", "true");
+      s.innerHTML = '<div class="box"><p class="q"></p><p class="aid"></p><pre class="atext"></pre><p class="afrom"></p><p class="amsg" aria-live="polite"></p><div class="btns"><button type="button" class="acancel">Cancel</button><button type="button" class="asend">Send</button></div></div>';
+      s.querySelector(".q").textContent = o.op === "all" ? "Mark every step done?" : "Ask the agent to do it?";
+      s.querySelector(".aid").textContent = o.project + " · " + o.id + " · " + o.title;
+      const t = s.querySelector(".atext");
+      t.textContent = o.text; if (!o.text) t.hidden = true;
+      s.querySelector(".afrom").textContent = o.op === "all" ? "The agent checks each step, then closes the action." : "The agent tries to do it for you, and tells you here if it can't.";
+      const msg = s.querySelector(".amsg"), send = s.querySelector(".asend");
+      const close = () => { s.remove(); if (sheet === s) sheet = null; };
+      s.querySelector(".acancel").addEventListener("click", close);
+      s.addEventListener("click", (ev) => { if (ev.target === s) close(); });
+      s.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+      send.addEventListener("click", async (ev) => {
+        if (!ev.isTrusted || send.disabled) return;
+        send.disabled = true; msg.textContent = "Sending…";
+        try {
+          await post(o);
+          msg.textContent = "Sent to the agent.";
+          if (o.done) o.done();
+          refreshCard(o.project, o.id);
+          setTimeout(close, 1000);
+        } catch (err) { msg.textContent = "Not sent: " + err.message; send.disabled = false; }
+      });
+      document.body.appendChild(s); sheet = s; send.focus();
+    }
+    function actClick(e, c, inPeek) {
+      const k = c.dataset.k;
+      const tick = e.target.closest("[data-tick]");
+      const btn = e.target.closest("[data-all],[data-agent]");
+      if (!tick && !btn) return false;
+      if (!e.isTrusted) return true;
+      if (!CAN) { flashMsg(c, "This device can't send. Use the public link (login) or an answer device."); return true; }
+      const base = { project: c.dataset.project, id: c.dataset.id, title: (c.querySelector(".dt") || {}).textContent || "" };
+      if (tick) {
+        if (tick.disabled || tick.dataset.busy) return true;
+        const on = tick.getAttribute("aria-checked") !== "true";
+        tick.dataset.busy = "1"; tick.setAttribute("aria-checked", String(on));
+        post(Object.assign(base, { op: on ? "tick" : "untick", step: Number(tick.dataset.tick) }))
+          .catch((err) => { tick.setAttribute("aria-checked", String(!on)); flashMsg(c, "Not saved: " + err.message); })
+          .then(() => { delete tick.dataset.busy; refreshCard(base.project, base.id); });
+        return true;
+      }
+      const note = noteOf(c);
+      const clear = () => { delete st.notes[k]; save(); [byKey(k), inPeek ? c : null].forEach((x) => { const t = x && x.querySelector(".dnote-in"); if (t) t.value = ""; }); };
+      if (btn.hasAttribute("data-all")) {
+        const left = Array.prototype.filter.call(c.querySelectorAll(".as"), (li) => li.classList.contains("as-todo"))
+          .map((li) => li.dataset.n + ". " + ((li.querySelector(".asb .markdown") || {}).textContent || "").trim().split("\n")[0].slice(0, 120));
+        askAct(Object.assign(base, { op: "all", note: note, done: clear, text: left.join("\n") + (note ? "\n\nNote: " + note : "") }));
+      } else askAct(Object.assign(base, { op: "agent", note: note, done: clear, text: note ? "Note: " + note : "" }));
+      return true;
+    }
+
     // ----- navigation inside the tab: refs scroll (or peek), outline rows scroll -----
     function scrollToCard(c) {
       c.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -364,7 +435,7 @@
     // A decision that isn't in the list (another filter or project): show it on top, without moving the list.
     async function peek(k) {
       const i = k.indexOf("/");
-      const r = await fetch("/decisions/part/card/" + encodeURIComponent(k.slice(0, i)) + "/" + encodeURIComponent(k.slice(i + 1))).catch(() => null);
+      const r = await fetch(BASE + "/part/card/" + encodeURIComponent(k.slice(0, i)) + "/" + encodeURIComponent(k.slice(i + 1))).catch(() => null);
       if (peekEl) peekEl.remove();
       const o = document.createElement("div");
       o.className = "peek"; o.setAttribute("role", "dialog"); o.setAttribute("aria-modal", "true");
@@ -379,7 +450,7 @@
           const t = c.querySelector(".dnote-in"); if (t) t.removeAttribute("id");
           hydrate(c);
         }
-      } else pb.textContent = "This decision is not in the hub (or not visible here).";
+      } else pb.textContent = (KIND === "act" ? "This action" : "This decision") + " is not in the hub (or not visible here).";
       const close = () => { o.remove(); if (peekEl === o) peekEl = null; };
       o.querySelector(".pclose").addEventListener("click", close);
       o.addEventListener("click", (ev) => {

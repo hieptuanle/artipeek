@@ -8,7 +8,7 @@ import { mkdirSync, existsSync, writeFileSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import * as s from "./schema.ts";
-import { STATUSES, type DecisionStatus, type EditStatus, type Question, type Link } from "./schema.ts";
+import { STATUSES, ACTION_STATUSES, type DecisionStatus, type EditStatus, type ActionStatus, type StepState, type Question, type Link } from "./schema.ts";
 
 export const ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,31}$/;
 export const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -19,11 +19,23 @@ export type Note = typeof s.notes.$inferSelect;
 export type Answer = typeof s.answers.$inferSelect;
 export type Edit = typeof s.edits.$inferSelect;
 export type Ref = { project: string; id: string; title?: string; status?: DecisionStatus };
+export type ActionRef = { project: string; id: string; title: string; status: ActionStatus };
 export type Full = Decision & {
   notes: Note[];
   from: Ref[]; dependsOn: Ref[]; // this decision → others
   ledTo: Ref[]; neededBy: Ref[]; // others → this decision
   answers: Answer[]; // newest first, at most 20
+  actions: ActionRef[]; // actions that came out of this decision
+};
+export type Action = typeof s.actions.$inferSelect;
+export type Step = typeof s.actionSteps.$inferSelect;
+export type Signal = typeof s.actionSignals.$inferSelect;
+export type FullAction = Action & { steps: Step[]; from: Ref[]; signals: Signal[] /* newest first, at most 20 */ };
+export type StepInput = { text?: string; command?: string | null; where?: string | null; links?: Link[] } | string;
+// What an agent may send for an action (create: title and steps required; update: any subset).
+export type ActionInput = {
+  id?: string; title?: string; lane?: string | null; context?: string; links?: Link[]; deadline?: string | null;
+  urgent?: boolean; steps?: StepInput[]; from?: string[];
 };
 // What an agent may send (create: title required; update: any subset). Relations as "D12" or "other-project:D12".
 export type Input = {
@@ -101,6 +113,17 @@ function checkLinks(v: unknown): Link[] {
     const href = str(l?.href, `link ${i + 1} href`, 2000, false)!;
     if (!checkHref(href)) bad(`link ${i + 1}: only http(s) links or paths in an artipeek folder`);
     return { label: str(l.label, `link ${i + 1} label`, 200) ?? href, href };
+  });
+}
+function checkSteps(v: unknown) {
+  if (!Array.isArray(v)) return bad("steps must be a list");
+  if (!v.length) bad("an action needs at least one step");
+  if (v.length > 30) bad("at most 30 steps");
+  return v.map((x: any, i) => {
+    if (typeof x === "string") x = { text: x };
+    if (!x || typeof x !== "object") bad(`step ${i + 1}: must be text or an object`);
+    const text = str(x.text, `step ${i + 1} text`, 4000, false)!;
+    return { text, command: str(x.command, `step ${i + 1} command`, 4000), where: str(x.where, `step ${i + 1} where`, 300), links: x.links === undefined || x.links === null ? [] : checkLinks(x.links) };
   });
 }
 export function parseDeadline(v: unknown): string | null {
@@ -196,7 +219,14 @@ export class Hub {
         meta.set(k(d.project, d.id), { title: d.title, status: d.status });
     const ref = (p: string, id: string): Ref => ({ project: p, id, ...meta.get(k(p, id)) });
     const by = new Map<string, Full>();
-    const out = rows.map((r) => { const f: Full = { ...r, notes: [], from: [], dependsOn: [], ledTo: [], neededBy: [], answers: [] }; by.set(k(r.project, r.id), f); return f; });
+    const out = rows.map((r) => { const f: Full = { ...r, notes: [], from: [], dependsOn: [], ledTo: [], neededBy: [], answers: [], actions: [] }; by.set(k(r.project, r.id), f); return f; });
+    const arels = this.db.select().from(s.actionRelations).where(and(inArray(s.actionRelations.toProject, projects), inArray(s.actionRelations.toId, ids))).all();
+    if (arels.length) {
+      const am = new Map<string, { title: string; status: ActionStatus }>();
+      for (const a of this.db.select({ project: s.actions.project, id: s.actions.id, title: s.actions.title, status: s.actions.status }).from(s.actions).where(inArray(s.actions.project, [...new Set(arels.map((r) => r.project))])).all())
+        am.set(k(a.project, a.id), a);
+      for (const r of arels) { const f = by.get(k(r.toProject, r.toId)), m = am.get(k(r.project, r.actionId)); if (f && m) f.actions.push({ project: r.project, id: r.actionId, ...m }); }
+    }
     for (const n of notes) by.get(k(n.project, n.decisionId))?.notes.push(n);
     for (const r of rels) {
       const a = by.get(k(r.project, r.decisionId)), b = by.get(k(r.toProject, r.toId));
@@ -264,7 +294,7 @@ export class Hub {
     let prefix = "D";
     for (const [p, ns] of per) if (ns.length > (per.get(prefix)?.length ?? 0)) prefix = p;
     let n = Math.max(0, ...(per.get(prefix) ?? [])) + 1;
-    while (this.editHas(project, `${prefix}${n}`)) n++; // E ids may be edit requests
+    while (this.editHas(project, `${prefix}${n}`) || this.actionHas(project, `${prefix}${n}`)) n++; // E ids may be edit requests, A ids actions
     return `${prefix}${n}`;
   }
   create(project: string, inp: Input, opts: { createdAt?: string } = {}): string {
@@ -276,6 +306,7 @@ export class Hub {
     this.sqlite.transaction(() => {
       if (this.has(project, id)) bad(`${id} already exists in ${project}; ids are never reused (update it, or leave out id for the next free one)`);
       if (this.editHas(project, id)) bad(`${id} is an edit request in ${project}; leave out id for the next free one`);
+      if (this.actionHas(project, id)) bad(`${id} is an action in ${project}; leave out id for the next free one`);
       this.db.insert(s.decisions).values({ ...cols, title: cols.title!, project, id, createdAt: at, updatedAt: at }).run();
       this.setRelations(project, id, inp);
     })();
@@ -342,7 +373,7 @@ export class Hub {
     let n = 0;
     for (const r of this.db.select({ id: s.edits.id }).from(s.edits).where(eq(s.edits.project, project)).all()) { const m = /^E(\d+)$/.exec(r.id); if (m) n = Math.max(n, Number(m[1])); }
     n++;
-    while (this.has(project, `E${n}`)) n++; // a folder whose decisions use E
+    while (this.has(project, `E${n}`) || this.actionHas(project, `E${n}`)) n++; // a folder whose decisions use E
     return `E${n}`;
   }
   edit(project: string, id: string): Edit | null {
@@ -413,6 +444,295 @@ export class Hub {
     }
     return since ? out.filter((a) => a.at > since) : out;
   }
+  // ----- actions (see schema.ts) -----
+  private actionListeners = new Set<(project: string, id: string | null) => void>();
+  // An action or one of its steps changed.
+  onAction(fn: (project: string, id: string | null) => void) { this.actionListeners.add(fn); }
+  private actionChanged(project: string, id: string | null) { for (const f of this.actionListeners) { try { f(project, id); } catch {} } }
+  actionHas(project: string, id: string): boolean {
+    return !!this.db.select({ id: s.actions.id }).from(s.actions).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).get();
+  }
+  nextActionId(project: string): string {
+    let n = 0;
+    for (const r of this.db.select({ id: s.actions.id }).from(s.actions).where(eq(s.actions.project, project)).all()) { const m = /^A(\d+)$/.exec(r.id); if (m) n = Math.max(n, Number(m[1])); }
+    n++;
+    while (this.has(project, `A${n}`) || this.editHas(project, `A${n}`)) n++; // a folder whose decisions use A
+    return `A${n}`;
+  }
+  private fullActions(rows: Action[]): FullAction[] {
+    if (!rows.length) return [];
+    const projects = [...new Set(rows.map((r) => r.project))], ids = [...new Set(rows.map((r) => r.id))];
+    const k = (p: string, id: string) => `${p}\u0000${id}`;
+    const by = new Map<string, FullAction>();
+    const out = rows.map((r) => { const f: FullAction = { ...r, steps: [], from: [], signals: [] }; by.set(k(r.project, r.id), f); return f; });
+    for (const st of this.db.select().from(s.actionSteps).where(and(inArray(s.actionSteps.project, projects), inArray(s.actionSteps.actionId, ids))).orderBy(asc(s.actionSteps.n)).all())
+      by.get(k(st.project, st.actionId))?.steps.push(st);
+    const rels = this.db.select().from(s.actionRelations).where(and(inArray(s.actionRelations.project, projects), inArray(s.actionRelations.actionId, ids))).all();
+    const meta = new Map<string, { title: string; status: DecisionStatus }>();
+    const ends = [...new Set(rels.map((r) => r.toProject))];
+    if (ends.length)
+      for (const d of this.db.select({ project: s.decisions.project, id: s.decisions.id, title: s.decisions.title, status: s.decisions.status }).from(s.decisions).where(inArray(s.decisions.project, ends)).all())
+        meta.set(k(d.project, d.id), { title: d.title, status: d.status });
+    for (const r of rels) by.get(k(r.project, r.actionId))?.from.push({ project: r.toProject, id: r.toId, ...meta.get(k(r.toProject, r.toId)) });
+    for (const g of this.db.select().from(s.actionSignals).where(and(inArray(s.actionSignals.project, projects), inArray(s.actionSignals.actionId, ids))).orderBy(desc(s.actionSignals.at)).all()) {
+      const f = by.get(k(g.project, g.actionId));
+      if (f && f.signals.length < 20) f.signals.push(g);
+    }
+    return out;
+  }
+  private actionWhere(opts: ListOpts): SQL | undefined | null {
+    const conds: SQL[] = [];
+    if (opts.projects) { if (!opts.projects.length) return null; conds.push(inArray(s.actions.project, opts.projects)); }
+    if (opts.statuses?.length) conds.push(inArray(s.actions.status, opts.statuses as ActionStatus[]));
+    if (opts.urgentAt) conds.push(eq(s.actions.status, "open"), or(eq(s.actions.urgent, true), and(isNotNull(s.actions.deadline), lt(s.actions.deadline, opts.urgentAt)))!);
+    return conds.length ? and(...conds) : undefined;
+  }
+  // Same order as decisions: raised order (or newest first), a page at a time.
+  actionList(opts: ListOpts = {}): FullAction[] {
+    const w = this.actionWhere(opts);
+    if (w === null) return [];
+    const dir = opts.newestFirst ? desc : asc;
+    let q = this.db.select().from(s.actions).where(w)
+      .orderBy(dir(s.actions.createdAt), asc(s.actions.project), dir(sql`length(${s.actions.id})`), dir(s.actions.id)).$dynamic();
+    if (opts.limit) q = q.limit(opts.limit).offset(opts.offset ?? 0);
+    return this.fullActions(q.all());
+  }
+  actionCount(opts: ListOpts = {}): number {
+    const w = this.actionWhere(opts);
+    if (w === null) return 0;
+    return Number(this.db.select({ n: sql<number>`count(*)` }).from(s.actions).where(w).get()?.n ?? 0);
+  }
+  actionCounts(projects: string[]): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {};
+    if (!projects.length) return out;
+    for (const r of this.sqlite.query(`SELECT project, status, count(*) AS n FROM actions WHERE project IN (${projects.map(() => "?").join(",")}) GROUP BY project, status`).all(...projects) as any[])
+      (out[r.project] ??= {})[r.status] = r.n;
+    return out;
+  }
+  action(project: string, id: string): FullAction | null {
+    const r = this.db.select().from(s.actions).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).get();
+    return r ? this.fullActions([r])[0] : null;
+  }
+  private actionRow(project: string, id: string): Action {
+    const a = this.db.select().from(s.actions).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).get();
+    return a ?? bad(`${id} is not an action of ${project}`);
+  }
+  private stepsOf(project: string, id: string): Step[] {
+    return this.db.select().from(s.actionSteps).where(and(eq(s.actionSteps.project, project), eq(s.actionSteps.actionId, id))).orderBy(asc(s.actionSteps.n)).all();
+  }
+  private setStep0(project: string, id: string, n: number, set: Partial<Step>) {
+    this.db.update(s.actionSteps).set(set).where(and(eq(s.actionSteps.project, project), eq(s.actionSteps.actionId, id), eq(s.actionSteps.n, n))).run();
+  }
+  // The status follows the steps and the person's request, until the agent closes the action.
+  private settle(project: string, id: string, at: string) {
+    const a = this.actionRow(project, id);
+    let status = a.status;
+    if (status !== "done" && status !== "withdrawn") {
+      const steps = this.stepsOf(project, id);
+      status = a.agentAskedAt ? "agent" : steps.length && steps.every((x) => x.state !== "todo") ? "checking" : "open";
+    }
+    this.db.update(s.actions).set({ status, updatedAt: at }).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).run();
+  }
+  private actionColumns(inp: ActionInput, creating: boolean) {
+    if (!inp || typeof inp !== "object" || Array.isArray(inp)) bad("send a JSON object");
+    const o: Partial<typeof s.actions.$inferInsert> = {};
+    const has = (k: keyof ActionInput) => Object.prototype.hasOwnProperty.call(inp, k);
+    if (creating || has("title")) o.title = str(inp.title, "title", 300, false)!;
+    if (has("lane")) o.lane = str(inp.lane, "lane", 60);
+    if (has("context")) o.context = str(inp.context, "context", 60_000) ?? "";
+    if (has("links")) o.links = checkLinks(inp.links);
+    if (has("deadline")) o.deadline = parseDeadline(inp.deadline);
+    if (has("urgent")) { if (typeof inp.urgent !== "boolean") bad("urgent must be true or false"); o.urgent = inp.urgent; }
+    if (has("status" as any)) bad('set the status with {"status": "done" | "withdrawn" | "open", "note"} (artipeek-decide action done|withdraw|handback)');
+    const steps = creating || has("steps") ? checkSteps(inp.steps) : undefined;
+    return { o, steps };
+  }
+  private setActionFrom(project: string, id: string, from: unknown) {
+    if (from === undefined) return;
+    if (!Array.isArray(from)) bad('from must be a list like ["D12"]');
+    if (from.length > 30) bad("from: at most 30");
+    const refs = from.map((r) => parseRef(r, project));
+    this.db.delete(s.actionRelations).where(and(eq(s.actionRelations.project, project), eq(s.actionRelations.actionId, id))).run();
+    for (const r of refs) this.db.insert(s.actionRelations).values({ project, actionId: id, ...r }).onConflictDoNothing().run();
+  }
+  createAction(project: string, inp: ActionInput, opts: { createdAt?: string } = {}): string {
+    if (!PROJECT_RE.test(project)) bad("bad project name");
+    const { o, steps } = this.actionColumns(inp, true);
+    const want = inp.id === undefined || inp.id === null || inp.id === "" ? null : String(inp.id).trim();
+    if (want !== null && !ID_RE.test(want)) bad(`id "${want}" must start with a letter (e.g. A3)`);
+    const at = opts.createdAt ?? now();
+    let id = "";
+    this.sqlite.transaction(() => {
+      id = want ?? this.nextActionId(project);
+      if (this.actionHas(project, id) || this.has(project, id) || this.editHas(project, id)) bad(`${id} is already used in ${project}; ids are never reused (leave out id for the next free one)`);
+      this.db.insert(s.actions).values({ ...o, title: o.title!, project, id, createdAt: at, updatedAt: at }).run();
+      steps!.forEach((st, i) => this.db.insert(s.actionSteps).values({ project, actionId: id, n: i + 1, ...st }).run());
+      this.setActionFrom(project, id, inp.from);
+    })();
+    this.actionChanged(project, id);
+    return id;
+  }
+  // Steps may be rewritten: a step keeps its state when its text stays the same at the same place; a ticked (or checked)
+  // step can't be changed or dropped.
+  updateAction(project: string, id: string, inp: ActionInput): void {
+    const { o, steps } = this.actionColumns(inp, false);
+    this.sqlite.transaction(() => {
+      this.actionRow(project, id);
+      const at = now();
+      this.db.update(s.actions).set({ ...o, updatedAt: at }).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).run();
+      if (steps) {
+        const old = this.stepsOf(project, id);
+        old.forEach((x, i) => {
+          const keep = steps[i] && steps[i].text === x.text;
+          if (!keep && (x.state !== "todo" || x.told !== "todo")) bad(`step ${x.n} is ${x.state === "todo" ? "unticked, but the agent hasn't heard yet" : x.state}: keep its text as it is (and keep it in the list)`);
+        });
+        this.db.delete(s.actionSteps).where(and(eq(s.actionSteps.project, project), eq(s.actionSteps.actionId, id))).run();
+        steps.forEach((st, i) => {
+          const x = old[i] && old[i].text === st.text ? old[i] : null;
+          this.db.insert(s.actionSteps).values({ ...(x ?? {}), project, actionId: id, n: i + 1, ...st }).run();
+        });
+      }
+      this.setActionFrom(project, id, inp.from);
+      this.settle(project, id, at);
+    })();
+    this.actionChanged(project, id);
+  }
+  private open(a: Action) { if (a.status === "done" || a.status === "withdrawn") bad(`${a.id} is ${a.status}`); }
+
+  // The person (checked by the server). Returns false when nothing changed (a double click, a stale page).
+  tickStep(project: string, id: string, n: number, on: boolean, by: string, at = now()): boolean {
+    let changed = false;
+    this.sqlite.transaction(() => {
+      this.open(this.actionRow(project, id));
+      const st = this.stepsOf(project, id).find((x) => x.n === n) ?? bad(`${id} has no step ${n}`);
+      if (on && st.state === "todo") { this.setStep0(project, id, n, { state: "done", doneAt: at, doneBy: by }); changed = true; }
+      if (!on && (st.state === "done" || st.state === "checking")) { this.setStep0(project, id, n, { state: "todo", doneAt: null, doneBy: by }); changed = true; }
+      if (!on && (st.state === "verified" || st.state === "skipped")) bad(`step ${n} is already ${st.state === "verified" ? "verified" : "closed (verify skipped)"} by the agent`);
+      if (changed) this.settle(project, id, at);
+    })();
+    if (changed) this.actionChanged(project, id);
+    return changed;
+  }
+  // "I've done all of them": every step still to do is ticked.
+  tickAll(project: string, id: string, by: string, note: string | null = null, at = now()): number {
+    let n = 0;
+    this.sqlite.transaction(() => {
+      this.open(this.actionRow(project, id));
+      if (note) this.db.update(s.actions).set({ personNote: note }).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).run();
+      for (const st of this.stepsOf(project, id)) if (st.state === "todo") { this.setStep0(project, id, st.n, { state: "done", doneAt: at, doneBy: by }); n++; }
+      this.settle(project, id, at);
+    })();
+    this.actionChanged(project, id);
+    return n;
+  }
+  // "Ask the agent to do it": the action goes to the agent until it closes it or hands it back.
+  askAgent(project: string, id: string, by: string, note: string | null, at = now()) {
+    this.sqlite.transaction(() => {
+      const a = this.actionRow(project, id);
+      this.open(a);
+      if (a.agentAskedAt && !a.agentHeard) bad(`you already asked; it goes to the agent in a moment`);
+      this.db.update(s.actions).set({ agentAskedAt: at, agentNote: note, agentBy: by, agentHeard: false }).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).run();
+      this.settle(project, id, at);
+    })();
+    this.actionChanged(project, id);
+  }
+  // Is there something the agent hasn't heard yet? (ticks, unticks, a request)
+  actionPending(project: string, id: string): boolean {
+    const a = this.db.select().from(s.actions).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).get();
+    return !!a && ((!!a.agentAskedAt && !a.agentHeard) || !!a.personNote || this.stepsOf(project, id).some((x) => x.state === "done" || (x.state === "todo" && x.told === "done")));
+  }
+  pendingActions(): { project: string; id: string }[] {
+    return this.sqlite.query(`SELECT DISTINCT a.project, a.id FROM actions a LEFT JOIN action_steps st ON st.project = a.project AND st.action_id = a.id
+      WHERE (a.agent_asked_at IS NOT NULL AND a.agent_heard = 0) OR a.person_note IS NOT NULL OR st.state = 'done' OR (st.state = 'todo' AND st.told = 'done')`).all() as { project: string; id: string }[];
+  }
+  // Everything the agent hasn't heard about one action, as one signal (ticked steps move on to checking). Null: nothing new.
+  takeActionSignal(project: string, id: string): Signal | null {
+    let sig: Signal | null = null;
+    this.sqlite.transaction(() => {
+      const a = this.db.select().from(s.actions).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).get();
+      if (!a) return;
+      const steps = this.stepsOf(project, id);
+      const ticked = steps.filter((x) => x.state === "done"), unticked = steps.filter((x) => x.state === "todo" && x.told === "done");
+      const ask = !!a.agentAskedAt && !a.agentHeard;
+      if (!ticked.length && !unticked.length && !ask && !a.personNote) return;
+      const at = now();
+      for (const x of ticked) this.setStep0(project, id, x.n, { state: "checking", told: "done" });
+      for (const x of unticked) this.setStep0(project, id, x.n, { told: "todo" });
+      this.db.update(s.actions).set({ agentHeard: true, personNote: null }).where(and(eq(s.actions.project, project), eq(s.actions.id, id))).run();
+      const nums = (l: Step[]) => `${l.length > 1 ? "steps" : "step"} ${l.map((x) => x.n).join(", ")}`;
+      const cut = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "…" : t);
+      const left = steps.filter((x) => x.state === "todo").length; // after this signal
+      const parts = [
+        ask ? `do it for me${a.agentNote ? ` (note: ${cut(a.agentNote, 1000)})` : ""}` : "",
+        ticked.length ? `${nums(ticked)} done by the person` : "",
+        unticked.length ? `${nums(unticked)} unticked (not done after all)` : "",
+        a.personNote ? `note: ${cut(a.personNote, 1000)}` : "",
+      ].filter(Boolean);
+      const sum = left ? `${steps.length - left} of ${steps.length} steps done` : `all ${steps.length} steps done`;
+      const next = ask ? "Try it yourself; mark each step verified (or skipped), then the action done or hand it back"
+        : ticked.length ? "Verify each ticked step (verified, or skipped if you can't check it), then mark the action done" : "Nothing to verify for now";
+      const by = (ask ? a.agentBy : null) ?? [...ticked, ...unticked].map((x) => x.doneBy).find(Boolean) ?? a.agentBy ?? "person";
+      // uid: the same shape as an answer's; the file line and the API share it
+      sig = { uid: randomBytes(6).toString("hex"), project, actionId: id, at, by,
+        text: `ACTION: ${id} "${cut(a.title, 120)}": ${parts.join("; ")} (${sum}). ${next}: artipeek-decide action show ${id}` };
+      this.db.insert(s.actionSignals).values(sig).run();
+      this.settle(project, id, at);
+    })();
+    if (sig) this.actionChanged(project, id);
+    return sig;
+  }
+  // Signals as the agent hears them (GET /api/answers).
+  actionNotices(project: string, since?: string) {
+    const rows = this.db.select().from(s.actionSignals).where(eq(s.actionSignals.project, project)).orderBy(asc(s.actionSignals.at)).all();
+    return rows.filter((g) => !since || g.at > since).map((g) => ({ uid: g.uid, project, decisionId: g.actionId, at: g.at, by: g.by, kind: "action" as const, text: g.text, page: "artipeek:actions" }));
+  }
+
+  // The agent: one step's state. todo = not done after all (say what is missing in the note).
+  setStep(project: string, id: string, n: number, inp: { state?: unknown; note?: unknown }): void {
+    if (!inp || typeof inp !== "object") bad("send a JSON object");
+    const state = (["checking", "verified", "skipped", "todo"] as const).find((x) => x === inp.state) ?? bad('state must be "checking", "verified", "skipped" or "todo"');
+    const note = str(inp.note, "note", 4000);
+    if (state === "todo" && !note) bad("say what is still missing in note when you send a step back");
+    this.sqlite.transaction(() => {
+      this.open(this.actionRow(project, id));
+      const st = this.stepsOf(project, id).find((x) => x.n === n) ?? bad(`${id} has no step ${n}`);
+      const at = now();
+      this.setStep0(project, id, n, state === "todo"
+        ? { state, told: "todo", note, checkedAt: at, doneAt: null }
+        : { state, told: "done", note: note ?? (state === "checking" ? st.note : null), checkedAt: at });
+      this.settle(project, id, at);
+    })();
+    this.actionChanged(project, id);
+  }
+  // The agent closes the action (done, withdrawn) or hands it back to the person (open: can't do it for them, or reopen).
+  resolveAction(project: string, id: string, inp: { status?: unknown; note?: unknown; force?: unknown }): void {
+    if (!inp || typeof inp !== "object") bad("send a JSON object");
+    const status = (["done", "withdrawn", "open"] as const).find((x) => x === inp.status) ?? bad('status must be "done", "withdrawn" or "open"');
+    const note = str(inp.note, "note", 4000);
+    if (status !== "done" && !note) bad(status === "open" ? "say why you hand it back in note" : "say why in note");
+    this.sqlite.transaction(() => {
+      const a = this.actionRow(project, id);
+      const at = now();
+      const where = and(eq(s.actions.project, project), eq(s.actions.id, id));
+      if (status === "done") {
+        if (a.status === "done" || a.status === "withdrawn") bad(`${id} is already ${a.status}`);
+        const left = this.stepsOf(project, id).filter((x) => x.state !== "verified" && x.state !== "skipped");
+        if (left.length && inp.force !== true) bad(`${left.length > 1 ? "steps" : "step"} ${left.map((x) => x.n).join(", ")} not verified or skipped yet: mark them (action step), or send force: true to close them as skipped`);
+        for (const x of left) this.setStep0(project, id, x.n, { state: "skipped", told: "done", checkedAt: at, note: x.note ?? "closed by the agent without a check" });
+        this.db.update(s.actions).set({ status: "done", ...(note ? { resolution: note } : {}), updatedAt: at }).where(where).run();
+      } else if (status === "withdrawn") {
+        if (a.status === "done" || a.status === "withdrawn") bad(`${id} is already ${a.status}`);
+        this.db.update(s.actions).set({ status: "withdrawn", resolution: note, updatedAt: at }).where(where).run();
+      } else {
+        // open: hand a "do it for me" back, or reopen a closed action
+        if (a.status !== "agent" && a.status !== "done" && a.status !== "withdrawn") bad(`${id} is ${a.status}: nothing to hand back`);
+        this.db.update(s.actions).set({ status: "open", resolution: note, agentAskedAt: null, agentHeard: true, updatedAt: at }).where(where).run();
+        this.settle(project, id, at);
+      }
+    })();
+    this.actionChanged(project, id);
+  }
+
 }
 
 export function openHub(file: string): Hub {

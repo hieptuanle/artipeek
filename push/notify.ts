@@ -6,6 +6,8 @@
 // - Triggers: check() runs after every hub change, when another process writes the file, and once a minute (deadlines
 //   cross the 24 h line without a write). Each decision gets at most one "new" and one "urgent" push, recorded in
 //   push_sent, so a restart or a re-import never pushes again.
+// - Actions (checklists for the person) get one "new" push when raised (same push_sent table: ids are unique within a
+//   project across decisions and actions). No buttons: a tap opens the action.
 // - History never pushes: a decision first seen when it was raised (and last changed) more than FRESH_MS ago is marked
 //   as seen without a push. That covers imports, decisions from before push was set up, and long downtime.
 import { eq } from "drizzle-orm";
@@ -113,6 +115,27 @@ export function createPush(deps: Deps) {
       mark(r.project, r.id, kinds, res.sent);
       if (res.sent) console.log(`artipeek (push): ${kind} ${r.id} in ${r.project} sent to ${res.sent} device(s)`);
     }
+    const acts = hub.sqlite.query(`SELECT a.project, a.id, a.title, a.created_at AS createdAt, (SELECT count(*) FROM action_steps st WHERE st.project = a.project AND st.action_id = a.id) AS steps
+      FROM actions a LEFT JOIN push_sent n ON n.project = a.project AND n.decision_id = a.id AND n.kind = 'new'
+      WHERE a.status = 'open' AND n.at IS NULL`).all() as { project: string; id: string; title: string; createdAt: string; steps: number }[];
+    for (const r of acts) {
+      if (!fresh(r.createdAt)) { mark(r.project, r.id, ["new"], 0); continue; }
+      const res = await notifyAction(r);
+      if (res.sent === 0 && res.transient > 0) continue;
+      mark(r.project, r.id, ["new"], res.sent);
+      if (res.sent) console.log(`artipeek (push): action ${r.id} in ${r.project} sent to ${res.sent} device(s)`);
+    }
+  }
+  function notifyAction(r: { project: string; id: string; title: string; steps: number }) {
+    if (!apns) return Promise.resolve({ sent: 0, transient: 0 });
+    const list = devices().filter((d) => deps.projectsFor(d.scope as DeviceScope).includes(r.project));
+    return sendTo(list, (d) => d.bundle !== cfg!.bundleId ? null : {
+      payload: {
+        aps: { alert: { title: `${r.project} · ${r.id} · action for you`, body: `${r.title.slice(0, 240)}\n${r.steps} step${r.steps === 1 ? "" : "s"}` }, sound: "default", badge: openCount(d.scope as DeviceScope), "thread-id": r.project },
+        url: `/r/${encodeURIComponent(r.project)}/actions#a:${r.project}:${r.id}`,
+      },
+      headers: Buffer.byteLength(`${r.project}:${r.id}`) <= 64 ? { "apns-collapse-id": `${r.project}:${r.id}` } : {},
+    });
   }
 
   function notify(r: Row, kind: "new" | "urgent") {
@@ -153,6 +176,7 @@ export function createPush(deps: Deps) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const soon = () => { if (!timer) timer = setTimeout(() => { timer = null; void check(); }, 200); };
   hub.onChange(() => soon());
+  hub.onAction(() => soon());
   let ver = hub.dataVersion();
   setInterval(() => { const v = hub.dataVersion(); if (v !== ver) { ver = v; soon(); } }, 1000);
   setInterval(() => soon(), 60_000);

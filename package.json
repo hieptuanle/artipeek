@@ -12,6 +12,7 @@
     "test:decisions": "bun test-decisions.ts",
     "test:push": "bun test-push.ts",
     "test:edits": "bun test-edits.ts",
+    "test:actions": "bun test-actions.ts",
     "db:generate": "drizzle-kit generate",
     "postinstall": "sh scripts/install-hooks.sh"
   },

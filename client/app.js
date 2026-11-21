@@ -50,35 +50,38 @@
 
   // ----- app tabs -----
   // Each tab has a pane in the page, hidden unless it is the active tab, so switching back fetches nothing. A tab is a
-  // file (base /r/<folder>, path; mode "view" or "edit") or the Decisions tab (one at most; q = its filters). The list
-  // is in sessionStorage: every browser tab has its own, and it survives a reload.
+  // file (base /r/<folder>, path; mode "view" or "edit"), the Decisions tab or the Actions tab (one of each at most;
+  // q = its filters). The list is in sessionStorage: every browser tab has its own, and it survives a reload.
   const TABS = "artipeek-tabs";
-  const DEC = "dec";
+  const DEC = "dec", ACT = "act";
+  const HUBS = { dec: { path: "/decisions", label: "Decisions", nav: "a.navdec:not(.navact)", hash: "d:" }, act: { path: "/actions", label: "Actions", nav: "a.navact", hash: "a:" } };
   const tabs = [];
   let active = null;
   history.scrollRestoration = "manual";
 
-  const isDec = (t) => t.kind === DEC;
+  const isDec = (t) => t.kind === DEC || t.kind === ACT; // a hub tab (Decisions or Actions)
+  const hubOf = (t) => HUBS[t.kind];
   const isEdit = (t) => t.kind === "file" && t.mode === "edit";
   // a file tab in edit mode: /r/<folder>/edit/<path> and its pane part/edit
   const fileKind = (t, kind) => (t.mode !== "edit" ? kind : kind === "view" ? "edit" : kind === "part/main" ? "part/edit" : kind);
   const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
   const tabUrl = (t, kind) => isDec(t)
-    ? (kind === "view" ? "/decisions" : "/decisions/part/page") + (t.q ? "?" + t.q : "")
+    ? hubOf(t).path + (kind === "view" ? "" : "/part/page") + (t.q ? "?" + t.q : "")
     : t.base + "/" + fileKind(t, kind) + "/" + encPath(t.path);
   const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
   const nameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
   const rootOf = (base) => { try { return decodeURIComponent(base.slice(3)); } catch { return base.slice(3); } };
-  // What an address opens: a file, or the Decisions tab (/decisions?…, /r/<folder>/decisions = that project).
+  // What an address opens: a file, or a hub tab (/decisions?…, /r/<folder>/decisions = that project; same for actions).
   function parseUrl(u) {
     let m = /^(\/r\/[^/]+)\/(view|raw|edit)\/(.+)$/.exec(u.pathname);
     if (m) { try { return { kind: "file", base: m[1], path: m[3].split("/").map(decodeURIComponent).join("/"), mode: m[2] === "edit" ? "edit" : "view" }; } catch { return null; } }
-    if (/^\/decisions\/?$/.test(u.pathname)) return { kind: DEC, q: u.search.slice(1) };
-    m = /^\/r\/([^/]+)\/decisions\/?$/.exec(u.pathname);
-    if (m) { const q = new URLSearchParams(u.search); try { q.set("project", decodeURIComponent(m[1])); } catch { return null; } return { kind: DEC, q: q.toString() }; }
+    m = /^\/(decisions|actions)\/?$/.exec(u.pathname);
+    if (m) return { kind: m[1] === "actions" ? ACT : DEC, q: u.search.slice(1) };
+    m = /^\/r\/([^/]+)\/(decisions|actions)\/?$/.exec(u.pathname);
+    if (m) { const q = new URLSearchParams(u.search); try { q.set("project", decodeURIComponent(m[1])); } catch { return null; } return { kind: m[2] === "actions" ? ACT : DEC, q: q.toString() }; }
     return null;
   }
-  const findTab = (f) => tabs.find((t) => (f.kind === DEC ? isDec(t) : !isDec(t) && t.base === f.base && t.path === f.path));
+  const findTab = (f) => tabs.find((t) => (isDec(f) ? t.kind === f.kind : !isDec(t) && t.base === f.base && t.path === f.path));
   const note = (html) => '<div class="filebar"><button type="button" class="menu" aria-label="Files" data-menu>☰</button></div><p class="note">' + html + "</p>";
 
   function addTab(f, y, pane) {
@@ -89,7 +92,7 @@
       pane.innerHTML = note("Loading…");
       main.appendChild(pane);
     }
-    const t = { kind: f.kind === DEC ? DEC : "file", mode: f.mode === "edit" ? "edit" : "view", base: f.base || "", path: f.path || "", q: f.q || "", y: y || 0, pane, loaded: false, seq: 0, hash: "", ctl: null, dirty: false };
+    const t = { kind: isDec(f) ? f.kind : "file", mode: f.mode === "edit" ? "edit" : "view", base: f.base || "", path: f.path || "", q: f.q || "", y: y || 0, pane, loaded: false, seq: 0, hash: "", ctl: null, dirty: false };
     tabs.push(t);
     return t;
   }
@@ -99,10 +102,10 @@
   function readTabs() {
     try {
       const a = JSON.parse(sessionStorage.getItem(TABS) || "[]");
-      return Array.isArray(a) ? a.filter((s) => s && (s.kind === DEC ? typeof s.q === "string" : typeof s.path === "string" && /^\/r\/[^/]+$/.test(s.base))) : [];
+      return Array.isArray(a) ? a.filter((s) => s && (isDec(s) ? typeof s.q === "string" : typeof s.path === "string" && /^\/r\/[^/]+$/.test(s.base))) : [];
     } catch { return []; }
   }
-  const label = (t) => (isDec(t) ? "Decisions" : (isEdit(t) ? "✎ " : "") + nameOf(t.path));
+  const label = (t) => (isDec(t) ? hubOf(t).label : (isEdit(t) ? "✎ " : "") + nameOf(t.path));
 
   function drawTabs() {
     tabbar.hidden = tabs.length < 2;
@@ -115,7 +118,7 @@
       box.dataset.i = i;
       const a = document.createElement("a");
       a.href = tabUrl(t, "view");
-      a.title = isDec(t) ? "Decisions" : rootOf(t.base) + "/" + t.path;
+      a.title = isDec(t) ? hubOf(t).label : rootOf(t.base) + "/" + t.path;
       // Many files share a name (email.html, README.md): then show the folder too.
       a.textContent = (!isDec(t) && same[label(t)] > 1 && dirOf(t.path) ? (isEdit(t) ? "✎ " : "") + nameOf(dirOf(t.path)) + "/" + nameOf(t.path) : label(t));
       const x = document.createElement("button");
@@ -136,7 +139,7 @@
     const raw = hash.slice(1);
     let dec = raw;
     try { dec = decodeURIComponent(raw); } catch {}
-    if (isDec(active) && active.ctl && /^d:/.test(dec)) { const p = dec.split(":"); active.ctl.jump(p[1] + "/" + p.slice(2).join(":")); return true; }
+    if (isDec(active) && active.ctl && dec.startsWith(hubOf(active).hash)) { const p = dec.split(":"); active.ctl.jump(p[1] + "/" + p.slice(2).join(":")); return true; }
     const el = raw && (active.pane.querySelector('[id="' + CSS.escape(raw) + '"]') || active.pane.querySelector('[id="' + CSS.escape(dec) + '"]'));
     if (el) el.scrollIntoView();
     return !!el;
@@ -144,7 +147,7 @@
 
   function title(t) {
     // Parent folder first, then the root (project): many folders hold a decisions.html or README.md.
-    document.title = isDec(t) ? "Decisions · artipeek" : (isEdit(t) ? "Edit " : "") + (dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path) + " · " + rootOf(t.base) + " · artipeek";
+    document.title = isDec(t) ? hubOf(t).label + " · artipeek" : (isEdit(t) ? "Edit " : "") + (dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path) + " · " + rootOf(t.base) + " · artipeek";
   }
 
   function activate(t, how, hash) {
@@ -180,7 +183,7 @@
         return;
       }
     }
-    if (t && isDec(t) && f.q && f.q !== t.q) { // the Decisions tab, asked with other filters
+    if (t && isDec(t) && f.q && f.q !== t.q) { // a hub tab, asked with other filters
       t.q = f.q;
       if (t.ctl) t.ctl.apply(f.q); else t.loaded = false;
     }
@@ -200,7 +203,7 @@
     else { drawTabs(); saveTabs(); }
   }
 
-  // The Decisions tab's controller (decisions/client.js) on its pane.
+  // A hub tab's controller (decisions/client.js, for Decisions and Actions) on its pane.
   function mountDec(t) {
     if (t.ctl) t.ctl.destroy();
     t.ctl = window.artipeekDecisions ? window.artipeekDecisions.mount(t.pane, {
@@ -273,10 +276,14 @@
       for (const t of tabs) if (!isDec(t) && t.loaded && t.base === base && t.path === d.path) loadStatus(t);
       refreshRoot(d.root); refreshRecent();
     });
-    for (const name of ["d", "ref", "all", "tick"]) es.addEventListener(name, (ev) => {
+    // decisions: d (one), ref; actions: a (one); both: all (many changed), tick (a minute passed)
+    for (const name of ["d", "ref", "a", "all", "tick"]) es.addEventListener(name, (ev) => {
       const d = JSON.parse(ev.data);
-      const t = tabs.find(isDec);
-      if (t && t.ctl) t.ctl.event(name, d);
+      for (const t of tabs) {
+        if (!isDec(t) || !t.ctl) continue;
+        if (name === "all" || name === "tick") t.ctl.event(name, d);
+        else if (t.kind === ACT ? name === "a" : name !== "a") t.ctl.event(name === "a" ? "d" : name, d);
+      }
       if (name !== "tick" || !navCountsAt || Date.now() - navCountsAt > 50_000) refreshNavCounts();
     });
     es.onerror = () => { catchUp = true; body.classList.add("offline"); };
@@ -338,17 +345,17 @@
     clearTimeout(navT);
     navT = setTimeout(async () => {
       navCountsAt = Date.now();
-      try {
-        const r = await fetch("/decisions/part/counts");
-        if (!r.ok) return;
-        const c = (await r.json()).counts || {};
-        let open = 0, urgent = 0;
-        for (const p in c) { open += c[p].open || 0; urgent += c[p].urgent || 0; }
-        const a = tree.querySelector("a.navdec");
-        if (!a) return;
-        a.querySelector(".nd-open").textContent = open ? String(open) : "";
-        a.querySelector(".nd-urg").textContent = urgent ? String(urgent) : "";
-      } catch {}
+      for (const h of Object.values(HUBS)) {
+        try {
+          const r = await fetch(h.path + "/part/counts");
+          if (!r.ok) continue;
+          const c = (await r.json()).counts || {};
+          const sum = (k) => Object.values(c).reduce((n, x) => n + (x[k] || 0), 0);
+          const a = tree.querySelector(h.nav);
+          if (!a) continue;
+          a.querySelectorAll("[class^=nd-]").forEach((el) => { const v = sum(el.className === "nd-open" ? "open" : el.className === "nd-urg" ? "urgent" : "agent"); el.textContent = v ? String(v) : ""; });
+        } catch {}
+      }
     }, 300);
   }
   tree.addEventListener("toggle", (e) => {
@@ -364,7 +371,7 @@
   function markTree(quiet) {
     tree.querySelectorAll("a.current").forEach((a) => a.classList.remove("current"));
     if (!active) return;
-    if (isDec(active)) { const a = tree.querySelector("a.navdec"); if (a) a.classList.add("current"); return; }
+    if (isDec(active)) { const a = tree.querySelector(hubOf(active).nav); if (a) a.classList.add("current"); return; }
     const root = rootOf(active.base);
     const sel = 'a[data-base="' + CSS.escape(active.base) + '"][data-path="' + CSS.escape(active.path) + '"]';
     tree.querySelectorAll(sel).forEach((a) => a.classList.add("current"));
@@ -604,12 +611,12 @@
   addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); }); // back from another page: the list may have moved on
 
   // ----- start: the saved list, plus the tab the server just rendered -----
-  const here = body.dataset.kind === DEC ? { kind: DEC, q: body.dataset.q || "" } : { kind: "file", base: body.dataset.base, path: body.dataset.path, mode: body.dataset.mode === "edit" ? "edit" : "view" };
+  const here = HUBS[body.dataset.kind] ? { kind: body.dataset.kind, q: body.dataset.q || "" } : { kind: "file", base: body.dataset.base, path: body.dataset.path, mode: body.dataset.mode === "edit" ? "edit" : "view" };
   const firstPane = main.querySelector(".pane");
   for (const s of readTabs()) {
     if (findTab(s)) continue;
-    const isHere = s.kind === DEC ? here.kind === DEC : here.kind !== DEC && s.base === here.base && s.path === here.path;
-    addTab(isHere ? Object.assign({}, s, here.kind === DEC ? { q: here.q } : { mode: here.mode }) : s, s.y, isHere ? firstPane : null);
+    const isHere = isDec(s) ? here.kind === s.kind : !isDec(here) && s.base === here.base && s.path === here.path;
+    addTab(isHere ? Object.assign({}, s, isDec(here) ? { q: here.q } : { mode: here.mode }) : s, s.y, isHere ? firstPane : null);
   }
   const start = findTab(here) || addTab(here, 0, firstPane);
   start.loaded = true;

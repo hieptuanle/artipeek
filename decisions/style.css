@@ -171,3 +171,44 @@ body.offline .dr1 .live::after { content:" off"; }
   .dnote-in { font-size:16px; }
 }
 body.nav-open .ofab { display:none; }
+/* actions (/actions): a checklist card */
+.ast-open { color:#9a6700; background:#fff8c5; border-color:#f2e08b; }
+.ast-agent, .ast-checking { color:var(--pick); border-color:var(--pick); }
+.ast-done { color:var(--rec); background:var(--recbg); border-color:transparent; }
+@media (prefers-color-scheme: dark) { .ast-open { color:#d29922; background:rgba(187,128,9,.15); border-color:rgba(187,128,9,.4); } }
+.aprog { margin-left:auto; font:600 11.5px ui-monospace, monospace; color:var(--muted); }
+.asteps { list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.as { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--side); }
+.as-verified { border-color:var(--rec); }
+.as-checking, .as-done { border-color:var(--pick); }
+.as-skipped { border-style:dashed; }
+.atick { flex:none; width:26px; height:26px; margin-top:1px; border-radius:7px; border:2px solid var(--muted); background:var(--bg); cursor:pointer; padding:0; position:relative; }
+.atick[aria-checked="true"] { background:var(--pick); border-color:var(--pick); }
+.atick[aria-checked="true"]::after { content:"✓"; position:absolute; inset:0; color:#fff; font:700 16px/22px system-ui, sans-serif; text-align:center; }
+.as-verified .atick { background:var(--rec); border-color:var(--rec); }
+.as-skipped .atick { background:var(--muted); border-color:var(--muted); }
+.atick:disabled { cursor:default; }
+.atick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.asn { flex:none; font:600 13px/28px ui-monospace, monospace; color:var(--muted); min-width:1.2em; }
+.asb { flex:1; min-width:0; font-size:14.5px; }
+.asb .markdown > :first-child { margin-top:4px; }
+.asb .markdown > :last-child { margin-bottom:0; }
+.as-verified .asb > .markdown, .as-skipped .asb > .markdown { color:var(--muted); }
+.awhere { margin:6px 0 0; font-size:13px; }
+.acmd { margin-top:8px; }
+.acmd pre { margin:0; padding:10px 64px 10px 12px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.acmd button.copy { opacity:1; }
+.astate { margin:6px 0 0; font-size:12.5px; color:var(--muted); }
+.as-verified .astate b { color:var(--rec); }
+.as-checking .astate b, .as-done .astate b { color:var(--pick); }
+.as-todo .astate b { color:var(--urg); }
+.aagent { margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--pick); font-size:13.5px; overflow-wrap:anywhere; }
+.aacts .amsg { margin:0; font-size:13px; color:var(--urg); }
+.asent { margin-top:10px; font-size:12.5px; color:var(--muted); }
+.asent ul { margin:4px 0 0; padding-left:1.2em; }
+.drel a.xref { font:12.5px ui-monospace, monospace; color:var(--accent); text-decoration:none; border-bottom:1px dashed; }
+.drel a.xref.done { opacity:.7; }
+.drel a.xref.missing { color:var(--muted); }
+.oi-done .ot, .oi-withdrawn .ot { color:var(--muted); }
+.dpane.readonly .atick:not(:disabled) { opacity:.6; }
+@media (max-width: 760px) { .as { padding:9px 10px; gap:8px; } .acmd pre { padding:34px 10px 10px; } .atick { width:30px; height:30px; } .atick[aria-checked="true"]::after { line-height:26px; } }

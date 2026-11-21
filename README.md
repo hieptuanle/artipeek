@@ -22,6 +22,7 @@ Built with [Bun](https://bun.sh). One server file, no build step, no client fram
 - On the machine: **http://127.0.0.1:4321**
 - From your other devices over [Tailscale](https://tailscale.com): **http://&lt;machine&gt;.&lt;tailnet&gt;.ts.net:4321** (only devices you list).
 - Optional, from anywhere: **https://artipeek.example.com** through a Cloudflare Tunnel, behind a Cloudflare Access login (see "Public hostname").
+- Optional, on iPhone and Apple Watch: the app in [`ios/`](ios/README.md), with a push for new and urgent decisions, and answers from the push or the Watch (see "iOS app, Apple Watch and push").
 
 Tip: on the phone, add the page to the home screen.
 
@@ -218,7 +219,7 @@ artipeek logs -f | restart | test | undo-config
   file inside the folder (no symlinks out) and commits only that file. The answer text is never logged.
   The decision hub's agent API (`/api/…`) also writes: it needs the folder's token (stored hashed) on every call, even
   from 127.0.0.1, is not on the public listener, and can't answer. Agent text is Markdown without raw HTML.
-  `POST /_/push/…` (the iOS app's device registration) follows the answer rules (see "iOS app and push"). The iOS and
+  `POST /_/push/…` (the iOS app's device registration) follows the answer rules (see "iOS app, Apple Watch and push"). The iOS and
   Watch apps send answers natively: the same headers, with the Access login cookie instead of a browser's.
 - **Network**: listens on 127.0.0.1, plus the machine's Tailscale IP if `tailnet` is true. It does not listen on Wi-Fi/LAN. A public hostname reaches it only through a tunnel to the separate `public` listener, which requires a Cloudflare Access login. It checks the Tailscale IP every 15 s and moves when the machine switches tailnet.
 - **Device check**: every tailnet request is checked with `tailscale whois`. It is served only if the device name is `<host>.<tailnet>` with host in `allowDevices` and tailnet in `tailnets`. Everything else gets 403 and one log line: IP, device name, path, never contents. 127.0.0.1 is always served.
@@ -253,12 +254,13 @@ Setup outline (Cloudflare dashboard or API):
 
 Undo: delete the Access app, the DNS record and the tunnel rule; revoke the API token; remove `public` from the config and restart.
 
-## iOS app and push (optional)
+## iOS app, Apple Watch and push (optional)
 
 `ios/` holds a small iOS app: a native SwiftUI shell around artipeek's own web UI (a `WKWebView`), so every web
 feature is in the app without an app update. Native parts: push notifications, the badge, the login (the Cloudflare
-Access page inside the app's web view), and settings (server URL, notifications on/off, a test push, sign out).
-Build and TestFlight steps: [`ios/README.md`](ios/README.md).
+Access page inside the app's web view), answer buttons on a push, and settings (server URL, notifications on/off, a
+test push, sign out). It brings an Apple Watch app: the open decisions, answered with a tap, and a complication with
+the counts. Build and TestFlight steps: [`ios/README.md`](ios/README.md).
 
 <p>
   <img src="docs/screenshots/ios-decisions.png" width="200" alt="The app on an iPhone: the Decisions tab, logged in through the public link, an urgent decision with its deadline">
@@ -267,6 +269,12 @@ Build and TestFlight steps: [`ios/README.md`](ios/README.md).
 </p>
 
 <img src="docs/screenshots/ipad-dark.png" width="420" alt="On an iPad in dark mode the file list sits on the left, with the app's settings gear in its header">
+
+<p>
+  <img src="docs/screenshots/watch-list.png" width="160" alt="The Apple Watch app: 3 open, 1 urgent; the urgent decision first, with the time left">
+  <img src="docs/screenshots/watch-decision.png" width="160" alt="A decision on the Watch: the recommended option in green with a star; tap, confirm, saved">
+  <img src="docs/screenshots/watch-questions.png" width="160" alt="A decision with two questions on the Watch: one pick per question, then Send my answers">
+</p>
 
 <sub>Screenshots use made-up demo folders.</sub>
 

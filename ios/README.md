@@ -1,6 +1,7 @@
-# artipeek for iOS
+# artipeek for iOS and Apple Watch
 
-A native SwiftUI shell around artipeek's own web UI, plus push notifications for decisions. The app shows the artipeek
+A native SwiftUI shell around artipeek's own web UI, plus push notifications for decisions (with answer buttons), and
+an Apple Watch app to answer them on the go. The app shows the artipeek
 server in a `WKWebView`, so the Decisions tab, the file list, file tabs, answers and explainers are the web version's,
 and a new web feature is in the app without an app update.
 
@@ -21,7 +22,7 @@ Native parts:
 - **Push**: after login, the app asks for permission once and registers its device token with the server
   (`POST /_/push/register`, sent from the web view, so it carries the page's login). A push for a decision that is
   raised, or turns urgent; a tap opens that decision. The badge is the number of open decisions (set by each push, and
-  when the app opens). See "iOS app and push" in the main README for the server side.
+  when the app opens). See "iOS app, Apple Watch and push" in the main README for the server side.
 - **Settings**: the gear in artipeek's header (the file list, or the home page), or the round gear on the login page:
   server, notifications on/off, a test push, sign out.
 - Like Safari for artipeek: inline scripts with the page's nonce, live updates (EventSource), sandboxed HTML frames, the
@@ -35,6 +36,12 @@ Native parts:
   buttons when the values aren't a usual set (A/B, A/B/C, A/B/C/D, Y/N have fixed letter buttons).
 
 ## Apple Watch
+
+<p>
+  <img src="../docs/screenshots/watch-list.png" width="160" alt="The Watch app: open decisions, urgent first">
+  <img src="../docs/screenshots/watch-decision.png" width="160" alt="A decision: options as buttons, the recommended one green">
+  <img src="../docs/screenshots/watch-questions.png" width="160" alt="Two questions: one pick each">
+</p>
 
 `ArtipeekWatch` is embedded in the iPhone app and installs on the paired Watch (Watch app → artipeek → Install, or
 automatically).

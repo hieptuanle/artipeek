@@ -193,7 +193,7 @@ got=""
 for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/r/two/view/README.md")" = 200 ] && { got=1; break; }; sleep 0.1; done
 [ -n "$got" ] && ok "config change adds folder 'two' without restart" || bad "config reload"
 grep -q 'href="/r/home/"' <<<"$(curl -s "$B/")" && bad "home folder accepted as root" || ok "too-wide root (~) refused"
-grep -q 'bad' <<<"$(curl -s "$B/")" && bad "bad root name accepted" || ok "bad root name refused"
+grep -qF '../bad' <<<"$(curl -s "$B/")" && bad "bad root name accepted" || ok "bad root name refused"
 grep -q 'data-root="two"' <<<"$(curl -s "$R/view/docs/note.md")" && ok "file list shows the new folder" || bad "file list missing two"
 
 # --- sidebar sort ---

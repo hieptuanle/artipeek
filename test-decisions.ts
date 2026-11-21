@@ -204,7 +204,7 @@ try {
   await p.click("#d\\:one\\:D1 a.xopen"); await wait(900);
   const xf = p.frames().find((f) => f.url().includes("/raw/docs/d2.html"));
   ok(xf && (await xf.$eval("h1", (e) => e.textContent)) === "Explainer for D2", "the explainer opens as an artipeek tab (sandboxed frame)");
-  ok((await p.$$eval("#tabs .tab a", (e) => e.map((x) => x.textContent))).join() === "Decisions,d2.html", "…next to the Decisions tab");
+  ok((await p.$$eval("#tabs .tab a", (e) => e.map((x) => x.firstChild?.textContent))).join() === "Decisions,d2.html", "…next to the Decisions tab");
   await xf!.click("#eb"); await wait(300);
   ok((await sheet())?.text === "Q1 B" && (await sheet())?.id === "D2", "an answer button inside the explainer opens artipeek's sheet");
   await p.click(".answersheet .acancel"); await wait(200);

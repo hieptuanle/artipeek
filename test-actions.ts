@@ -236,6 +236,14 @@ try {
   ok(await p.$eval("#tree a.navact", (x) => x.classList.contains("current")) && (await p.$eval("#tree a.navact .nd-agent", (x) => x.textContent ?? "")) !== "", "the file list marks Actions, with a count of what's with the agent");
   await p.reload(); await wait(800);
   ok((await p.$$("#tabs .tab")).length === 2 && new URL(p.url()).pathname === "/actions", "both tabs survive a reload");
+  const w = await p.evaluate(() => {
+    const n = (s: string) => document.querySelector(s)?.textContent ?? "";
+    const icon = decodeURIComponent((document.querySelector('link[rel="icon"]') as HTMLLinkElement).href);
+    return { dec: n("#tree a.navdec:not(.navact) .nd-open"), act: n("#tree a.navact .nd-open"), tdec: n('.tab .tcount[data-hub="dec"]'), tact: n('.tab .tcount[data-hub="act"]'),
+      icon: [...icon.matchAll(/<text[^>]*>([^<]*)</g)].map((m) => m[1]).join(","), work: getComputedStyle(document.body).getPropertyValue("--work").trim() };
+  });
+  ok(w.dec + w.act !== "" && w.tdec === w.dec && w.tact === w.act, `the Decisions and Actions tabs show what waits (${w.tdec || 0} / ${w.tact || 0})`);
+  ok(w.icon === [w.dec, w.act].filter(Boolean).join(",") && w.work === JSON.stringify(String(+w.dec + +w.act)), `the browser tab's icon (${w.icon}) and the phone's menu button (${w.work}) show it too`);
   // a phone
   await p.setViewport({ width: 390, height: 800 });
   await p.goto(`${B}/r/one/actions`); await wait(600);

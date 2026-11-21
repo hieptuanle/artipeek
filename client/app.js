@@ -46,7 +46,39 @@
     });
   }
   setInterval(ages, 30000);
-  if (!tree) return; // home page
+
+  // The tab's icon: the logo, plus a red badge (open decisions, top right) and an amber one (actions to do, bottom
+  // right), so a background tab shows what waits for you. Drawn from /_/icon.svg; no badge = the plain icon.
+  let iconSvg = null, iconKey = "";
+  async function setIconBadges(dec, act) {
+    const key = dec + "/" + act;
+    if (key === iconKey) return;
+    iconKey = key;
+    if (iconSvg === null) { try { const r = await fetch("/_/icon.svg"); iconSvg = r.ok ? await r.text() : ""; } catch { iconSvg = ""; } }
+    if (!iconSvg) return;
+    const pill = (n, y, fill) => {
+      if (!n) return "";
+      const t = n > 99 ? "99+" : String(n), w = 30 + 12 * (t.length - 1), x = 64 - w;
+      return `<rect x="${x}" y="${y}" width="${w}" height="30" rx="15" fill="${fill}" stroke="#fff" stroke-width="3"/>`
+        + `<text x="${x + w / 2}" y="${y + 23.5}" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700" fill="#fff">${t}</text>`;
+    };
+    const svg = iconSvg.replace(/<\/svg>\s*$/, pill(dec, 1, "#cf222e") + pill(act, 33, "#bc4c00") + "</svg>");
+    const href = dec || act ? "data:image/svg+xml," + encodeURIComponent(svg) : "/_/icon.svg";
+    document.querySelectorAll('link[rel="icon"]').forEach((l, i) => { if (i) l.remove(); else { l.type = "image/svg+xml"; l.removeAttribute("sizes"); l.href = href; } });
+  }
+  async function hubOpenCount(path) {
+    try {
+      const r = await fetch(path + "/part/counts");
+      if (!r.ok) return null;
+      return Object.values((await r.json()).counts || {}).reduce((n, x) => n + (x.open || 0), 0);
+    } catch { return null; }
+  }
+
+  if (!tree) { // home page: no live stream here, so look once a minute
+    const look = async () => { const d = await hubOpenCount("/decisions"), a = await hubOpenCount("/actions"); setIconBadges(d || 0, a || 0); };
+    look(); setInterval(look, 60_000);
+    return;
+  }
 
   // ----- app tabs -----
   // Each tab has a pane in the page, hidden unless it is the active tab, so switching back fetches nothing. A tab is a
@@ -126,6 +158,7 @@
       x.textContent = "×";
       x.setAttribute("aria-label", "Close " + label(t));
       x.dataset.close = i;
+      if (isDec(t)) { const c = document.createElement("span"); c.className = "tcount tc-" + t.kind; c.dataset.hub = t.kind; c.textContent = hubWork[t.kind] || ""; a.append(c); }
       box.append(a, x);
       return box;
     }));
@@ -340,23 +373,35 @@
     if (!box) return;
     try { const r = await fetch("/_/part/recent?sort=" + getSort()); if (r.ok) { box.innerHTML = await r.text(); ages(box); markTree(true); } } catch {}
   }
+  // What waits for you: open decisions, actions to do. Shown in the list (with urgent and "with the agent"), on the
+  // Decisions/Actions tabs, on the phone's menu button and in the browser tab's icon.
   let navCountsAt = 0, navT = 0;
+  const hubWork = { dec: 0, act: 0 };
   function refreshNavCounts() {
     clearTimeout(navT);
     navT = setTimeout(async () => {
       navCountsAt = Date.now();
-      for (const h of Object.values(HUBS)) {
+      for (const [key, h] of Object.entries(HUBS)) {
         try {
           const r = await fetch(h.path + "/part/counts");
           if (!r.ok) continue;
           const c = (await r.json()).counts || {};
           const sum = (k) => Object.values(c).reduce((n, x) => n + (x[k] || 0), 0);
+          hubWork[key] = sum("open");
           const a = tree.querySelector(h.nav);
           if (!a) continue;
           a.querySelectorAll("[class^=nd-]").forEach((el) => { const v = sum(el.className === "nd-open" ? "open" : el.className === "nd-urg" ? "urgent" : "agent"); el.textContent = v ? String(v) : ""; });
         } catch {}
       }
+      showWork();
     }, 300);
+  }
+  function showWork() {
+    tabbar.querySelectorAll(".tcount").forEach((el) => { el.textContent = hubWork[el.dataset.hub] || ""; });
+    const n = hubWork.dec + hubWork.act;
+    if (n) body.style.setProperty("--work", JSON.stringify(n > 99 ? "99+" : String(n))); else body.style.removeProperty("--work");
+    body.classList.toggle("has-work", n > 0);
+    setIconBadges(hubWork.dec, hubWork.act);
   }
   tree.addEventListener("toggle", (e) => {
     const d = e.target;

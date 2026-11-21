@@ -29,8 +29,8 @@ let fails = 0;
 const ok = (c: any, m: string) => { console.log((c ? "ok   " : "FAIL ") + m); if (!c) fails++; };
 try {
   const st = (p: any) => p.evaluate(() => ({
-    tabs: [...document.querySelectorAll("#tabs .tab a")].map((a: any) => a.textContent),
-    act: document.querySelector("#tabs .tab.active a")?.textContent,
+    tabs: [...document.querySelectorAll("#tabs .tab a")].map((a: any) => a.firstChild?.textContent),
+    act: document.querySelector("#tabs .tab.active a")?.firstChild?.textContent,
     cur: [...document.querySelectorAll("#tree ul.tree a.current")].map((a: any) => a.dataset.path),
     panes: document.querySelectorAll(".pane").length,
     vis: document.querySelector(".pane:not([hidden]) .crumbs b")?.textContent,

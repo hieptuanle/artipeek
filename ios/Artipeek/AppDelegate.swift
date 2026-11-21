@@ -3,7 +3,7 @@ import UserNotifications
 
 // Push callbacks: the device token, a push while the app is open, a tap on a push (also from a cold start), and a tap
 // on one of its answer buttons (from the iPhone, or the Watch while the phone is locked), which saves the answer in
-// the background.
+// the background; on an action's push, "Ask the agent to do it…" sends that in the background.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let center = UNUserNotificationCenter.current()
@@ -32,6 +32,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let content = response.notification.request.content
         let info = content.userInfo
         let action = response.actionIdentifier
+        // an action's push: "Ask the agent to do it…" (the note may be empty)
+        if action == "agent", info["kind"] as? String == "action", let project = info["project"] as? String, let id = info["id"] as? String {
+            let note = (response as? UNTextInputNotificationResponse)?.userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            await PushAction.askAgent(project: project, id: id, note: note, from: response.notification)
+            return
+        }
         var text: String?
         if action.hasPrefix("answer.") { text = String(action.dropFirst("answer.".count)) }
         if action == "reply" { text = (response as? UNTextInputNotificationResponse)?.userText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -62,12 +68,38 @@ enum PushAnswer {
             center.removeDeliveredNotifications(withIdentifiers: [note.request.identifier])
             reply.title = "Saved: \(project) · \(id) → \(text)"
             reply.body = titleLine
-            if let s = try? await api.list() { try? await center.setBadgeCount(s.open) }
+            if let s = try? await api.list() { try? await center.setBadgeCount(s.forYou) }
         } catch {
             reply.title = "Not saved: \(project) · \(id) → \(text)"
             reply.body = "\(error.localizedDescription) Tap to answer in artipeek."
             reply.sound = .default
         }
         try? await center.add(UNNotificationRequest(identifier: "artipeek.saved.\(project).\(id)", content: reply, trigger: nil))
+    }
+}
+
+// "Ask the agent to do it…" on an action's push, then says so with a short notification.
+enum PushAction {
+    static func askAgent(project: String, id: String, note: String?, from n: UNNotification) async {
+        let center = UNUserNotificationCenter.current()
+        let content = n.request.content
+        let reply = UNMutableNotificationContent()
+        reply.threadIdentifier = content.threadIdentifier
+        reply.userInfo = ["url": content.userInfo["url"] ?? "/actions"]
+        let titleLine = content.body.split(separator: "\n").first.map(String.init) ?? ""
+        do {
+            guard let login = await LoginSync.current() else { throw APIError.noLogin }
+            let api = ArtipeekAPI(login)
+            try await api.action(project: project, id: id, .agent(note: note))
+            center.removeDeliveredNotifications(withIdentifiers: [n.request.identifier])
+            reply.title = "Asked the agent: \(project) · \(id)"
+            reply.body = titleLine + (note.map { $0.isEmpty ? "" : "\nNote: \($0)" } ?? "")
+            if let s = try? await api.list() { try? await center.setBadgeCount(s.forYou) }
+        } catch {
+            reply.title = "Not sent: \(project) · \(id) → ask the agent"
+            reply.body = "\(error.localizedDescription) Tap to open the action in artipeek."
+            reply.sound = .default
+        }
+        try? await center.add(UNNotificationRequest(identifier: "artipeek.asked.\(project).\(id)", content: reply, trigger: nil))
     }
 }

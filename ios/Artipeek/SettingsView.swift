@@ -48,7 +48,7 @@ struct SettingsView: View {
                     .disabled(busy || !model.notificationsOn)
                     if !testResult.isEmpty { Text(testResult).font(.footnote).foregroundStyle(.secondary) }
                 } header: { Text("Push") } footer: {
-                    Text("A push when a decision is raised, and when one turns urgent (flagged, or its deadline is within 24 hours). The badge counts open decisions.")
+                    Text("A push when a decision is raised, when one turns urgent (flagged, or its deadline is within 24 hours), and when an action (steps only you can do) is raised. The badge counts open decisions and actions to do.")
                 }
 
                 Section {

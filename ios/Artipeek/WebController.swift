@@ -112,7 +112,8 @@ final class WebController: NSObject, ObservableObject {
         }
     }
 
-    // Badge = open decisions this login can see (the same number a push sets).
+    // Badge = open decisions + actions to do this login can see (the same number a push sets). A server without
+    // actions has no /actions/part/counts: then decisions only.
     func refreshBadge() async {
         guard onArtipeekPage else { return }
         let js = """
@@ -121,6 +122,10 @@ final class WebController: NSObject, ObservableObject {
         const j = await r.json();
         let n = 0;
         for (const k in j.counts || {}) n += j.counts[k].open || 0;
+        try {
+          const a = await fetch("/actions/part/counts", { credentials: "same-origin" });
+          if (a.ok) { const c = (await a.json()).counts || {}; for (const k in c) n += c[k].open || 0; }
+        } catch (e) {}
         return n;
         """
         if let n = (try? await webView.callAsyncJavaScript(js, contentWorld: .page)) as? Int, n >= 0 {

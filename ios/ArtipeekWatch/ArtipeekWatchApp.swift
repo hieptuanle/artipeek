@@ -1,7 +1,8 @@
 import SwiftUI
 
-// artipeek on the Watch: open decisions, urgent first; tap one, tap an answer, confirm. The login comes from the
-// iPhone app (after you log in there); answers go to the server directly (Wi-Fi or cellular), as yours.
+// artipeek on the Watch: open decisions, urgent first; tap one, tap an answer, confirm. Below them the actions waiting
+// for you (tick a step, all done, ask the agent; each confirmed), then those with the agent. The login comes from the
+// iPhone app (after you log in there); answers and ticks go to the server directly (Wi-Fi or cellular), as yours.
 @main
 struct ArtipeekWatchApp: App {
     @StateObject private var store = WatchStore()

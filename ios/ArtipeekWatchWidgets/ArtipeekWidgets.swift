@@ -1,7 +1,8 @@
 import SwiftUI
 import WidgetKit
 
-// Complication: open and urgent decisions (from the server every 15 minutes, and whenever the Watch app refreshes).
+// Complication: what waits for you, open decisions + actions to do (the app's badge rule), and how many are urgent
+// (from the server every 15 minutes, and whenever the Watch app refreshes). A server without actions: decisions only.
 @main
 struct ArtipeekWidgets: WidgetBundle {
     var body: some Widget { DecisionsWidget() }
@@ -9,14 +10,21 @@ struct ArtipeekWidgets: WidgetBundle {
 
 struct DecisionsEntry: TimelineEntry {
     var date: Date
-    var open: Int
+    var open: Int // open decisions + actions to do
     var urgent: Int
     var top: String?
     var known: Bool
+    var decisions = 0
+    var actions = 0
+    // "2 decisions · 1 action", or "3 open" before actions
+    var parts: String {
+        guard actions > 0 else { return "\(open) open" }
+        return (decisions > 0 ? "\(decisions) decision\(decisions == 1 ? "" : "s") · " : "") + "\(actions) action\(actions == 1 ? "" : "s")"
+    }
 }
 
 struct DecisionsProvider: TimelineProvider {
-    func placeholder(in context: Context) -> DecisionsEntry { DecisionsEntry(date: Date(), open: 3, urgent: 1, top: "Ship the beta on Friday?", known: true) }
+    func placeholder(in context: Context) -> DecisionsEntry { DecisionsEntry(date: Date(), open: 3, urgent: 1, top: "Ship the beta on Friday?", known: true, decisions: 2, actions: 1) }
 
     func getSnapshot(in context: Context, completion: @escaping (DecisionsEntry) -> Void) {
         completion(Self.entry(Vault.snapshot) ?? placeholder(in: context))
@@ -33,8 +41,10 @@ struct DecisionsProvider: TimelineProvider {
 
     static func entry(_ s: Snapshot?) -> DecisionsEntry? {
         guard let s else { return nil }
-        let top = s.decisions.first(where: \.urgent) ?? s.decisions.first
-        return DecisionsEntry(date: Date(), open: s.open, urgent: s.urgent, top: top.map { "\($0.id) \($0.title)" }, known: true)
+        let urgentAction = s.todo.first(where: \.urgent).map { "\($0.id) \($0.title)" }
+        let urgentDecision = s.decisions.first(where: \.urgent).map { "\($0.id) \($0.title)" }
+        let top = urgentDecision ?? urgentAction ?? s.decisions.first.map { "\($0.id) \($0.title)" } ?? s.todo.first.map { "\($0.id) \($0.title)" }
+        return DecisionsEntry(date: Date(), open: s.forYou, urgent: s.urgentAll, top: top, known: true, decisions: s.open, actions: s.actionsTodo)
     }
 }
 
@@ -44,7 +54,7 @@ struct DecisionsWidget: Widget {
             DecisionsWidgetView(e: e).containerBackground(for: .widget) { Color.clear }
         }
         .configurationDisplayName("Decisions")
-        .description("Open and urgent decisions in artipeek.")
+        .description("Open decisions and actions to do in artipeek, and how many are urgent.")
         .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline, .accessoryCorner])
     }
 }
@@ -60,21 +70,21 @@ struct DecisionsWidgetView: View {
                 AccessoryWidgetBackground()
                 VStack(spacing: 0) {
                     Text(e.known ? "\(e.open)" : "–").font(.title3.bold())
-                    Text(e.urgent > 0 ? "\(e.urgent) urgent" : "open").font(.system(size: 9)).foregroundStyle(e.urgent > 0 ? .red : .secondary)
+                    Text(e.urgent > 0 ? "\(e.urgent) urgent" : e.actions > 0 ? "for you" : "open").font(.system(size: 9)).foregroundStyle(e.urgent > 0 ? .red : .secondary)
                 }
             }
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
                 Text("artipeek").font(.caption2.bold()).widgetAccentable()
-                Text(e.known ? "\(e.open) open\(e.urgent > 0 ? " · \(e.urgent) urgent" : "")" : "Open the app").font(.caption)
+                Text(e.known ? "\(e.parts)\(e.urgent > 0 ? " · \(e.urgent) urgent" : "")" : "Open the app").font(.caption)
                 if let t = e.top { Text(t).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .accessoryCorner:
             Text(e.known ? "\(e.open)" : "–").font(.title3.bold())
-                .widgetLabel(e.urgent > 0 ? "\(e.urgent) urgent" : "open")
+                .widgetLabel(e.urgent > 0 ? "\(e.urgent) urgent" : e.actions > 0 ? "for you" : "open")
         default:
-            Text(e.known ? "\(e.open) open\(e.urgent > 0 ? " · \(e.urgent) urgent" : "")" : "artipeek")
+            Text(e.known ? "\(e.parts)\(e.urgent > 0 ? " · \(e.urgent) urgent" : "")" : "artipeek")
         }
     }
 }

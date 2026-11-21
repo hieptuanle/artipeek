@@ -3,8 +3,8 @@ import Security
 
 // What the iPhone app, its notification buttons, the Watch app and the complication share: the login (the Cloudflare
 // Access cookie of the artipeek server, taken from the iPhone's web view after you log in there) and a small client for
-// the two calls a native screen needs: the list of open decisions, and sending an answer. Both go through the same
-// login and the same rules as artipeek's page.
+// the calls a native screen needs: the list of open decisions and live actions, sending an answer, and ticking an
+// action's steps (or "all done", "ask the agent"). All go through the same login and the same rules as artipeek's page.
 
 struct Login: Codable, Equatable {
     var server: URL
@@ -34,11 +34,78 @@ struct Decision: Codable, Hashable {
     var deadlineDate: Date? { deadline.flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) } }
 }
 
+// An action (a checklist of work only you can do). Step state: todo, done (ticked; the agent hears it in a minute),
+// checking (the agent is verifying), verified, skipped (the agent couldn't verify it).
+struct ActionStep: Codable, Hashable {
+    var n: Int
+    var text: String
+    var command: String?
+    var `where`: String?
+    var state: String
+    var note: String?
+    var ticked: Bool { state != "todo" }
+    var locked: Bool { state == "verified" || state == "skipped" }
+}
+
+struct ActionItem: Codable, Hashable {
+    var project: String
+    var id: String
+    var title: String
+    var status: String // open (to do), agent (you asked the agent), checking (all ticked, the agent verifies)
+    var lane: String?
+    var urgent: Bool
+    var flagged: Bool
+    var deadline: String?
+    var createdAt: String
+    var context: String
+    var steps: [ActionStep]
+    var ticked: Int
+    var from: [String]
+    var agentAskedAt: String?
+    var agentNote: String?
+    var resolution: String?
+    var url: String
+    var key: String { "\(project)/\(id)" }
+    var isTodo: Bool { status == "open" }
+    var live: Bool { status == "open" || status == "agent" || status == "checking" }
+    var progress: String { "\(ticked)/\(steps.count)" }
+    var deadlineDate: Date? { deadline.flatMap { ISO8601DateFormatter.withFraction.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) } }
+}
+
+struct ActionCounts: Codable, Hashable { var todo: Int; var urgent: Int; var agent: Int }
+
+// /decisions/part/app.json. actions, actionCounts and badge came with app 1.2; an older server leaves them out.
 struct Snapshot: Codable {
     var open: Int
     var urgent: Int
     var decisions: [Decision]
+    var actions: [ActionItem]?
+    var actionCounts: ActionCounts?
+    var badge: Int?
     var fetchedAt: Date?
+
+    var allActions: [ActionItem] { actions ?? [] }
+    var todo: [ActionItem] { allActions.filter(\.isTodo) }
+    var withAgent: [ActionItem] { allActions.filter { !$0.isTodo } }
+    var actionsTodo: Int { actionCounts?.todo ?? 0 }
+    // The app's badge and the complication's number: open decisions + actions to do (same rule as the server's push).
+    var forYou: Int { badge ?? open + actionsTodo }
+    var urgentAll: Int { urgent + (actionCounts?.urgent ?? 0) }
+}
+
+// What you send for an action: tick or untick a step, "I've done all the steps", "Ask the agent to do it".
+enum ActionOp: Equatable {
+    case tick(Int), untick(Int), all(note: String?), agent(note: String?)
+    var body: [String: Any] {
+        var b: [String: Any]
+        switch self {
+        case .tick(let n): b = ["op": "tick", "step": n]
+        case .untick(let n): b = ["op": "untick", "step": n]
+        case .all(let note): b = ["op": "all"]; if let note, !note.isEmpty { b["note"] = note }
+        case .agent(let note): b = ["op": "agent"]; if let note, !note.isEmpty { b["note"] = note }
+        }
+        return b
+    }
 }
 
 enum APIError: LocalizedError {
@@ -97,12 +164,21 @@ final class ArtipeekAPI: NSObject, URLSessionTaskDelegate {
     // The same call as the answer sheet of artipeek's page (same headers; the login cookie instead of the browser's).
     // page: "artipeek:push" (a button on a push) or "artipeek:watch".
     func answer(project: String, id: String, text: String, page: String) async throws {
-        var r = request("/r/\(project.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? project)/answer")
+        try await post(project: project, path: "answer", kind: "answer", body: ["id": id, "text": text, "page": page])
+    }
+
+    // The same call as the Actions tab of artipeek's page: POST /r/<folder>/action {id, op, step?, note?}.
+    func action(project: String, id: String, _ op: ActionOp) async throws {
+        try await post(project: project, path: "action", kind: "action", body: op.body.merging(["id": id]) { a, _ in a })
+    }
+
+    private func post(project: String, path: String, kind: String, body: [String: Any]) async throws {
+        var r = request("/r/\(project.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? project)/\(path)")
         r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.setValue("answer", forHTTPHeaderField: "X-Artipeek")
+        r.setValue(kind, forHTTPHeaderField: "X-Artipeek")
         r.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["id": id, "text": text, "page": page])
+        r.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, http) = try await send(r)
         if http.statusCode == 200 { return }
         let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String

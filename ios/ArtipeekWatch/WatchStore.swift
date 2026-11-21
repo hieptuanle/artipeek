@@ -8,7 +8,7 @@ final class WatchStore: NSObject, ObservableObject {
     @Published private(set) var login: Login? = Vault.login
     @Published var error: String?
     @Published private(set) var loading = false
-    @Published var path: [Decision] = []
+    @Published var path = NavigationPath()
 
     func start() {
         #if DEBUG
@@ -31,7 +31,8 @@ final class WatchStore: NSObject, ObservableObject {
             Vault.snapshot = s
             error = nil
             #if DEBUG
-            if let k = UserDefaults.standard.string(forKey: "openDecision"), path.isEmpty, let d = s.decisions.first(where: { $0.key == k }) { path = [d] }
+            if let k = UserDefaults.standard.string(forKey: "openDecision"), path.isEmpty, let d = s.decisions.first(where: { $0.key == k }) { path.append(d) }
+            if let k = UserDefaults.standard.string(forKey: "openAction"), path.isEmpty, let a = s.allActions.first(where: { $0.key == k }) { path.append(a) }
             #endif
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
@@ -45,6 +46,16 @@ final class WatchStore: NSObject, ObservableObject {
         try await ArtipeekAPI(login).answer(project: d.project, id: d.id, text: text, page: "artipeek:watch")
         Task { await reload() }
     }
+
+    // Tick or untick a step, "all done", "ask the agent": then the list again (the step's new state comes from the server).
+    func act(_ a: ActionItem, _ op: ActionOp) async throws {
+        guard let login else { throw APIError.noLogin }
+        try await ArtipeekAPI(login).action(project: a.project, id: a.id, op)
+        await reload()
+    }
+
+    // The latest copy of an action (after a reload), else the one given.
+    func latest(_ a: ActionItem) -> ActionItem { snapshot?.allActions.first { $0.key == a.key } ?? a }
 
     fileprivate func apply(_ ctx: [String: Any]) {
         if ctx["signedOut"] as? Bool == true {

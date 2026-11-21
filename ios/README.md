@@ -21,8 +21,8 @@ Native parts:
   persistent website data store until it runs out; then the login page shows again.
 - **Push**: after login, the app asks for permission once and registers its device token with the server
   (`POST /_/push/register`, sent from the web view, so it carries the page's login). A push for a decision that is
-  raised, or turns urgent; a tap opens that decision. The badge is the number of open decisions (set by each push, and
-  when the app opens). See "iOS app, Apple Watch and push" in the main README for the server side.
+  raised, or turns urgent, and for a new action (steps only you can do); a tap opens that decision or action. The badge
+  is the number of open decisions plus actions to do (set by each push, and when the app opens). See "iOS app, Apple Watch and push" in the main README for the server side.
 - **Settings**: the gear in artipeek's header (the file list, or the home page), or the round gear on the login page:
   server, notifications on/off, a test push, sign out.
 - Like Safari for artipeek: inline scripts with the page's nonce, live updates (EventSource), sandboxed HTML frames, the
@@ -34,6 +34,8 @@ Native parts:
   copied from the web view to the Keychain, and a short "Saved: D4 → A" notification follows. **Reply…** takes a typed,
   dictated or scribbled answer. `ArtipeekNotify` (a notification service extension) puts the option labels on the
   buttons when the values aren't a usual set (A/B, A/B/C, A/B/C/D, Y/N have fixed letter buttons).
+- **On an action's push**: **Ask the agent to do it…** (an optional note, then Send) asks the agent in the background,
+  as the Actions tab's button does; an "Asked the agent" notification follows. **Open** opens the action.
 
 ## Apple Watch
 
@@ -49,11 +51,15 @@ automatically).
 - Open decisions, urgent first, with the time left. Tap one: the context, the options as buttons (the recommended one
   green, with a star), one pick per question when there are several, or **Answer in words**. Every answer asks
   "Send A?" first, then saves and goes back to the list.
+- Below them the actions to do (urgent first; ticked steps as 2/4), then those with the agent. Tap one: its steps with
+  their states (ticked, the agent is checking, verified, verify skipped) and commands in full, to read. Tap a step to
+  tick or untick it, or **All done** / **Ask the agent to do it** (an optional note first); each asks first. A server
+  from before actions shows decisions only.
 - The login: the iPhone app sends it (the Access cookie, over WatchConnectivity) after you log in there, and again when
   it changes. The Watch then talks to the server itself, over Wi-Fi or cellular, also with the phone away. Sign out on
   the iPhone signs the Watch out too. When the login runs out, open artipeek on the iPhone.
-- Complication (`ArtipeekWatchWidgets`): open and urgent counts (circular, corner, inline), or the counts and the first
-  urgent decision (rectangular). It refreshes every 15 minutes and whenever the Watch app does.
+- Complication (`ArtipeekWatchWidgets`): open decisions + actions to do (the badge rule) and urgent counts (circular,
+  corner, inline), or "2 decisions · 1 action", the urgent count and the first urgent item (rectangular). It refreshes every 15 minutes and whenever the Watch app does.
 - The Watch app and the complication share the login through a keychain group of the team
   (`<team>.<bundle id>.watch`); no App Group needed.
 
@@ -98,4 +104,5 @@ DEBUG builds take two launch arguments: `-openPath /r/<folder>/decisions#d:<fold
 would, `-showSettings 1` opens the settings. `-serverURL http://127.0.0.1:4321` points a simulator at a local server
 (push registration is refused there: it needs a login or an answer device, like answers). The Watch app takes
 `-serverURL` too (instead of the iPhone's login; point it at a local proxy that adds an Access token),
-`-openDecision <folder>/<id>`, and `-autoAnswer A` (sends that answer on the opened decision).
+`-openDecision <folder>/<id>`, and `-autoAnswer A` (sends that answer on the opened decision), `-openAction
+<folder>/<id>` and `-autoAction tick:2` (or `untick:2`, `all`, `agent`) on the opened action.

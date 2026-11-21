@@ -52,7 +52,8 @@ final class AppModel: ObservableObject {
         return c.url
     }
 
-    // A path from a push ("/r/<folder>/decisions#d:<folder>:<id>") on this server. Only paths: never another site.
+    // A path from a push ("/r/<folder>/decisions#d:<folder>:<id>", "/r/<folder>/actions#a:<folder>:<id>") on this
+    // server. Only paths: never another site.
     nonisolated static func resolve(path: String?, on server: URL?) -> URL? {
         guard let server, let path, path.hasPrefix("/"), !path.hasPrefix("//") else { return nil }
         return URL(string: server.absoluteString + path)
@@ -133,7 +134,7 @@ final class AppModel: ObservableObject {
         ])
         if r.status == 200 {
             registered = true
-            pushStatus = "On. This device gets a push for new and urgent decisions."
+            pushStatus = "On. This device gets a push for new and urgent decisions, and new actions."
             if let n = r.body["badge"] as? Int { try? await UNUserNotificationCenter.current().setBadgeCount(n) }
         } else {
             pushStatus = "Not registered: \(r.error)"

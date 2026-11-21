@@ -4,15 +4,17 @@
 //   /decisions/part/list, /part/card/<project>/<id>, /part/counts    fragments, a page of 30 at a time
 //   /decisions/part/app.json                 open decisions as JSON, for the Watch app
 //   /api/decisions/<project>[/<id>[/notes]], /api/answers/<project>   agents, with the project's token
+//   /api/edits/<project>[/<id>]              edit requests the person sent (see server.ts "edit requests")
 // Live changes go out through artipeek's one stream (/_/events), via deps.broadcast.
 // The API is never on the public listener. Agents create and change decisions; only the person (artipeek's own
 // sheet, see server.ts answer()) can answer them.
 import MarkdownIt from "markdown-it";
 import { readFileSync } from "node:fs";
+import { editDiff } from "../edits/diff.ts";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { Hub, InputError, ID_RE, type Full, type Ref, type ListOpts } from "../db/store.ts";
-import { STATUSES, type Question } from "../db/schema.ts";
+import { Hub, InputError, ID_RE, sha256, type Full, type Ref, type ListOpts, type Edit } from "../db/store.ts";
+import { STATUSES, EDIT_STATUSES, type EditStatus, type Question } from "../db/schema.ts";
 
 export const DECISIONS_JS = readFileSync(path.join(import.meta.dir, "client.js"), "utf8");
 export const DECISIONS_CSS = readFileSync(path.join(import.meta.dir, "style.css"), "utf8");
@@ -261,10 +263,28 @@ export function createDecisionsWeb(deps: Deps) {
     if (raw.length > 256_000) throw new InputError("body over 256 kB");
     try { return JSON.parse(raw); } catch { throw new InputError("bad JSON"); }
   }
+  // An edit request for the agent. full: with the file's text before (base), the person's text, the diff, and where
+  // the file is now (still as it was, already the person's text, or changed some other way).
+  function editOut(project: string, e: Edit, full: boolean) {
+    const d = editDiff(e.path, e.base, e.text);
+    const out: Record<string, unknown> = {
+      id: e.id, path: e.path, status: e.status, note: e.note, replaces: e.replaces, by: e.by, createdAt: e.createdAt, updatedAt: e.updatedAt,
+      resolution: e.resolution, resolvedBy: e.resolvedBy, added: d.added, removed: d.removed,
+      url: `/r/${encodeURIComponent(project)}/view/${e.path.split("/").map(encodeURIComponent).join("/")}`,
+    };
+    if (!full) return out;
+    let file: string;
+    try {
+      const f = deps.visibleRoots(null).find((r) => r.name === project)?.resolve(e.path);
+      const sha = f ? sha256(new TextDecoder().decode(readFileSync(f.abs))) : "";
+      file = !f ? "missing" : sha === e.textSha ? "has the edit" : sha === e.baseSha ? "unchanged" : "changed since";
+    } catch { file = "missing"; }
+    return { ...out, file, diff: d.patch, base: e.base, text: e.text };
+  }
   // Every API call needs the project's token: Authorization: Bearer <token>. Even from 127.0.0.1.
   async function api(req: Request, p: string, scope: Scope): Promise<Response> {
     if (scope) return json(404, { ok: false, error: "not here" });
-    const m = /^\/api\/(decisions|answers)\/([^/]+)(?:\/([^/]+))?(?:\/(notes))?\/?$/.exec(p);
+    const m = /^\/api\/(decisions|answers|edits)\/([^/]+)(?:\/([^/]+))?(?:\/(notes))?\/?$/.exec(p);
     if (!m) return json(404, { ok: false, error: "unknown path" });
     let project: string, id: string | undefined;
     try { project = decodeURIComponent(m[2]); id = m[3] && decodeURIComponent(m[3]); } catch { return json(400, { ok: false, error: "bad path" }); }
@@ -279,7 +299,24 @@ export function createDecisionsWeb(deps: Deps) {
     try {
       if (m[1] === "answers") {
         if (req.method !== "GET" || id) return json(405, { ok: false, error: "GET /api/answers/<project>?since=<ISO>" });
-        return json(200, { ok: true, answers: hub.answersSince(project, url.searchParams.get("since") ?? undefined) });
+        const since = url.searchParams.get("since") ?? undefined;
+        const all = [...hub.answersSince(project, since), ...hub.editNotices(project, since)].sort((a, b) => a.at.localeCompare(b.at));
+        return json(200, { ok: true, answers: all });
+      }
+      if (m[1] === "edits") {
+        if (m[4]) return json(404, { ok: false, error: "unknown path" });
+        if (!id) {
+          if (req.method !== "GET") return json(405, { ok: false, error: "GET /api/edits/<project>?status=pending" });
+          const st = url.searchParams.get("status") ?? "pending";
+          const statuses = st === "all" ? undefined : st.split(",").filter((x): x is EditStatus => (EDIT_STATUSES as readonly string[]).includes(x));
+          return json(200, { ok: true, edits: hub.edits(project, statuses).map((e) => editOut(project, e, false)) });
+        }
+        if (req.method === "GET") {
+          const e = hub.edit(project, id);
+          return e ? json(200, { ok: true, edit: editOut(project, e, true) }) : json(404, { ok: false, error: `${id} is not an edit request of ${project}` });
+        }
+        if (req.method === "PATCH") return json(200, { ok: true, edit: editOut(project, hub.resolveEdit(project, id, await body(req), "agent"), false) });
+        return json(405, { ok: false, error: "GET or PATCH" });
       }
       if (!id) {
         if (req.method === "GET") {

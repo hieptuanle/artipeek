@@ -17,6 +17,66 @@ Built with [Bun](https://bun.sh). It runs directly from TypeScript with no build
 
 <sub>Screenshots use made-up demo folders.</sub>
 
+## How it works
+
+A **desk** is a git repository where a few AI agents work for you—for example, a planner, a secretary collecting questions, and worker agents running in terminal sessions on this machine or another one. artipeek watches the desk repo read-only and streams live updates to your browser, phone, or [iOS app](#ios-app-apple-watch-and-push-optional) over `127.0.0.1`, Tailscale, or a [Cloudflare Access public link](#public-hostname-cloudflare-tunnel--access).
+
+```mermaid
+flowchart TB
+  subgraph desk["Desk (git repo + AI agents)"]
+    agents["AI agents (planner, secretary, workers)"]
+    repo["Desk git repo (Markdown, HTML, answers.jsonl)"]
+    agents -->|"write files / read answers"| repo
+  end
+
+  subgraph host["artipeek host"]
+    ap["artipeek server (127.0.0.1, Tailscale, or Cloudflare Access)"]
+    db[("Decision hub (SQLite)")]
+    ap <--> db
+  end
+
+  apns["Apple push (APNs, optional)"]
+  you["You (browser, phone, iOS app, Watch)"]
+
+  repo -->|"watched read-only"| ap
+  agents <-->|"artipeek-decide / /api/ (folder token)"| ap
+  ap -.->|"answers.jsonl + commit + after (optional)"| repo
+  ap -->|"live SSE + read-only pages"| you
+  you -->|"confirmed answer, Explain this, or a file edit"| ap
+  ap -.->|"new / urgent alert"| apns
+  apns -.->|"push + quick buttons"| you
+```
+
+Agents raise and update questions in the [Decision hub](#decision-hub) using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers. Only you can answer, via artipeek's confirm sheet (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
+
+```mermaid
+sequenceDiagram
+  participant A as AI agent
+  participant R as Desk repo
+  participant S as artipeek + Hub
+  participant U as You (web / iOS / Watch)
+
+  A->>S: Raise decision (artipeek-decide + folder token)
+  S-->>U: Live SSE update (+ APNs push if new or urgent)
+
+  alt Answer directly
+    U->>S: Confirm answer (sheet, push button, or Watch)
+  else Ask "Explain this" first
+    U->>S: Request explainer (EXPLAIN: ...)
+    S-->>R: Append answers.jsonl, commit, run after (if set)
+    A->>S: Read request (artipeek-decide answers or file)
+    A->>R: Write explainer HTML page
+    A->>S: Link page (artipeek-decide update --explainer)
+    S-->>U: Card updates with Open explainer tab
+    U->>S: Confirm answer
+  end
+
+  S-->>R: Append answers.jsonl, commit, run after (if set)
+  A->>S: Read answer (artipeek-decide answers or file)
+  A->>S: Act and mark relayed or closed
+  S-->>U: Live SSE update on Decisions tab
+```
+
 ## Quick start
 
 Install dependencies, copy the example config, start the user service, and link the admin CLI:
@@ -47,7 +107,7 @@ artipeek renders files on the server and streams live updates to your browser ov
 ### Navigation and layout
 
 - **Home (`/`)**: shows open and urgent decision counts per folder, followed by one card per folder with its 5 newest files.
-- **File page (`/r/<folder>/view/<path>`)**: shows the rendered file. On a phone, tap `☰` for the slide-in file list; on a laptop, the list stays docked on the left.
+- **File page (`/r/<folder>/view/<path>`)**: shows the rendered file. On a phone, tap `☰` for the slide-in file list; on a laptop, the list stays docked on the left. In a folder with an agent, **edit** (next to **raw**) opens the [edit view](#edit-requests): your change goes to the agent, not into the file.
 - **In-app tabs**: clicking any link to a file inside artipeek (from the file list, Markdown, HTML pages, or Decisions) opens it in an in-app tab, or switches to it if already open. **Decisions** opens as a single tab.
   - Hidden tabs stay mounted with their scroll position intact, switch instantly, and keep updating live.
   - Each browser tab keeps its own tab list in `sessionStorage` (persisting across reloads) and spans all folders.
@@ -110,6 +170,21 @@ bun scripts/import-decisions.ts <folder> path/to/decisions.md
 Open decisions import in full; answered decisions import from the last 30 days (configurable with `--days`). Raise timestamps are read from git history.
 
 The database lives at `decisions.db` next to `config.json` (override with `"decisions": { "db": "…" }`). The schema is in `db/schema.ts`; after changing it, run `bunx drizzle-kit generate` (the server applies migrations in `drizzle/` at startup).
+
+## Edit requests
+
+Spotted something to change in a file an agent wrote? Tap **edit** next to **raw** on the file's page. You change the text there, but artipeek doesn't write the file: it sends your change to the folder's agent as an **edit request** (E1, E2…), and the agent updates the file itself. So the agent always knows what changed and why, and nothing it is working on gets overwritten behind its back.
+
+1. **Edit** the text (and add a note for the agent if you like). What you type survives a reload of the page.
+2. **Send to the agent…** (or Ctrl/Cmd+S) opens artipeek's own sheet with your change as a diff. Only a real click on **Send** sends it.
+3. Until the agent acts, the file's page says **✎ Edit E3 sent: waiting for the agent**, with your change under it, and the file list marks the file with ✎.
+4. The agent updates the file and marks the request **done**, or **declines** it with a reason. The page shows either one (for 3 days), live. If the file comes to have exactly your text, the request is done by itself.
+
+- **Changing it again** before the agent acts: the edit view starts from your pending text, and sending replaces the request (E4 replaces E3). **Take E3 back** withdraws it.
+- **The file changed while you were editing**: the editor says so and keeps your text; Send checks first and offers the new version instead of sending a change made against an old one.
+- **Where**: folders with an agent, i.e. with `answers` set or an agent token (`artipeek decisions token <folder>`). Text files up to 512 kB (no images or binaries); a file's CRLF line endings are kept.
+- **Who**: only you, under the same rules as answers (a Cloudflare Access login or a device in `answerDevices`, never plain `127.0.0.1`).
+- **How the agent hears it**: like an answer. In folders with `answers` set, one line in the answers file (`"kind": "edit"`, `"id": "E3"`, `"page"` = the file, text starting with `EDIT:`), a commit and the `after` command. Always in the hub, through `artipeek-decide answers`, `artipeek-decide edits` and `GET /api/edits/<folder>`. The agent reads it with `artipeek-decide edit show E3` (the diff; `--text` gives your whole new text) and closes it with `artipeek-decide edit done E3 "note"` or `edit decline E3 "why"`. See [docs/decisions-for-agents.md](docs/decisions-for-agents.md#edit-requests).
 
 ## Answer buttons (optional)
 
@@ -222,6 +297,7 @@ artipeek assumes agent-written files may be untrusted and enforces strict bounda
   - `POST /r/<folder>/answer` (folders with `answers` configured or decisions in the hub): requires a Cloudflare Access login or a device in `answerDevices` (never plain `127.0.0.1`), `Sec-Fetch-Site: same-origin` (set by the browser, not by page scripts), `X-Artipeek: answer`, and a JSON body under 8 KB (forcing any cross-site attempt into a CORS preflight, which gets `405`). Appends one line to one file inside the folder (no outbound symlinks), commits only that file, and never logs answer text. Native iOS and Watch answers send the same headers with the Access login cookie.
   - Decision hub agent API (`/api/…`): requires the folder's hashed bearer token on every call (even from `127.0.0.1`), is disabled on the public listener, and cannot submit answers. Agent text is Markdown with raw HTML disabled.
   - Push registration (`POST /_/push/…`): enforces the same caller, origin, and JSON checks as answers, with `X-Artipeek: push`.
+  - Edit requests (`POST /r/<folder>/edit`, folders with an agent): the same caller, origin, and JSON checks as answers, with `X-Artipeek: edit` and a body under 1.5 MB. It never writes the file: it stores the request in the hub and, with `answers` set, appends one line to the answers file and commits only that file. File text is never logged.
 - **Network listeners**: listens only on `127.0.0.1` and, when `tailnet` is `true`, the machine's Tailscale IP (checked every 15 s to follow tailnet changes). Never listens on Wi-Fi/LAN. Public access goes only through a Cloudflare Tunnel to the separate `public` listener, which requires Cloudflare Access.
 - **Tailscale device check**: every tailnet request is verified via `tailscale whois` and served only if the peer matches `<host>.<tailnet>` with `host` in `allowDevices` and `tailnet` in `tailnets`. All other tailnet requests return `403` and log one line (IP, device name, path—never file contents). `127.0.0.1` is always served.
 - **Browser isolation**: strict Content-Security-Policy allows only the server's own small script and blocks remote images, fonts, and scripts. Raw files receive `CSP: sandbox` (opaque origin, no network). `.html` files get `allow-scripts` for inline scripts only when framed inside artipeek's file page (`Sec-Fetch-Dest: iframe`, `Sec-Fetch-Site: same-origin`), where `frame-src 'self'` prevents navigating away; `allow-same-origin` is never set.
@@ -333,6 +409,7 @@ All tests use temporary folders and a temporary config—never your real reposit
 | `bun run test:answers` | Browser tests (Chromium): confirm sheet isolation, Cancel vs Send, JSON line + git commit, `artipeek:answer-saved` callback, choice + note, free text, empty answer handling. |
 | `bun run test:decisions` | Browser tests (Chromium): agent token API auth and restrictions, single-stream folder scoping, queue/history order, pagination (30/page), urgency, outline, cross-decision links, filters, jump-free live updates (desktop and phone), notes/picks survival, multi-question answers, explainer flow, all-folders view, external DB writes, `decisions.html` redirect. |
 | `bun run test:tabs` | Browser tests (Chromium): tab opening/switching, sidebar highlight tracking, cached tab scroll position, preserved HTML iframes, links inside HTML, Back navigation, live updates on hidden tabs, closing, reload persistence, lazy folder loading, multi-folder tabs, single Decisions tab, per-browser-tab lists, phone viewport. |
+| `bun run test:edits` | Edit requests (Chromium): who may send (not 127.0.0.1, not cross-site, not folders without an agent), preview vs send, the file left untouched, the answers line + commit, the agent API and `artipeek-decide edit`, replacing, done/declined/withdrawn, done by itself, stale edits refused, CRLF kept; in the browser: drafts across reloads, a file changing under you, the sheet (untrusted clicks ignored), live bar and file-list mark. |
 | `bun run test:push` | Fake local HTTP/2 APNs server checking ES256 auth: registration rules, single push per new/urgent decision, silent history/imports, restart persistence, `public.roots` scoping, dead token removal, payload fields (`title`, `body`, `badge`, `thread-id`, `data`), and test push. |
 
 Browser tests require Chromium (set `CHROME_PATH` if it is not at `/usr/bin/chromium`).

@@ -8,7 +8,7 @@ import { mkdirSync, existsSync, writeFileSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import * as s from "./schema.ts";
-import { STATUSES, type DecisionStatus, type Question, type Link } from "./schema.ts";
+import { STATUSES, type DecisionStatus, type EditStatus, type Question, type Link } from "./schema.ts";
 
 export const ID_RE = /^[A-Za-z][A-Za-z0-9._-]{0,31}$/;
 export const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -17,6 +17,7 @@ const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,15}$/;
 export type Decision = typeof s.decisions.$inferSelect;
 export type Note = typeof s.notes.$inferSelect;
 export type Answer = typeof s.answers.$inferSelect;
+export type Edit = typeof s.edits.$inferSelect;
 export type Ref = { project: string; id: string; title?: string; status?: DecisionStatus };
 export type Full = Decision & {
   notes: Note[];
@@ -39,6 +40,15 @@ export class InputError extends Error {}
 const bad = (m: string): never => { throw new InputError(m); };
 const now = () => new Date().toISOString();
 const hash = (t: string) => createHash("sha256").update(t).digest("hex");
+export const sha256 = hash;
+
+// What an edit request says to the agent, in the answers file and in GET /api/answers (kind "edit"). It always starts
+// with EDIT:, so a desk that reads only the text can't take it for an answer to a decision.
+export function editLine(e: Edit, what: "sent" | "withdrawn" = "sent"): string {
+  if (what === "withdrawn") return `EDIT: ${e.id} withdrawn: leave ${e.path} as it is.`;
+  const note = e.note ? ` (note: ${e.note.length > 1000 ? e.note.slice(0, 1000) + "…" : e.note})` : "";
+  return `EDIT: ${e.path}${e.replaces ? `, replaces ${e.replaces}` : ""}${note}. Update the file yourself: artipeek-decide edit show ${e.id}`;
+}
 
 function str(v: unknown, name: string, max: number, opt = true): string | null {
   if (v === undefined || v === null || v === "") return opt ? null : bad(`${name} is required`);
@@ -159,6 +169,9 @@ export class Hub {
     const a = Buffer.from(row.tokenHash, "hex"), b = Buffer.from(hash(tok), "hex");
     return a.length === b.length && timingSafeEqual(a, b);
   }
+  hasToken(project: string): boolean {
+    return !!this.db.select({ t: s.projects.tokenHash }).from(s.projects).where(eq(s.projects.name, project)).get()?.t;
+  }
   projectsWithTokens(): { name: string; hasToken: boolean; createdAt: string }[] {
     return this.db.select().from(s.projects).all().map((p) => ({ name: p.name, hasToken: !!p.tokenHash, createdAt: p.createdAt }));
   }
@@ -250,7 +263,9 @@ export class Hub {
     for (const id of ids) { const m = /^([A-Za-z]+)(\d+)$/.exec(id); if (m) { if (!per.has(m[1])) per.set(m[1], []); per.get(m[1])!.push(Number(m[2])); } }
     let prefix = "D";
     for (const [p, ns] of per) if (ns.length > (per.get(prefix)?.length ?? 0)) prefix = p;
-    return `${prefix}${Math.max(0, ...(per.get(prefix) ?? [])) + 1}`;
+    let n = Math.max(0, ...(per.get(prefix) ?? [])) + 1;
+    while (this.editHas(project, `${prefix}${n}`)) n++; // E ids may be edit requests
+    return `${prefix}${n}`;
   }
   create(project: string, inp: Input, opts: { createdAt?: string } = {}): string {
     if (!PROJECT_RE.test(project)) bad("bad project name");
@@ -260,6 +275,7 @@ export class Hub {
     const at = opts.createdAt ?? now();
     this.sqlite.transaction(() => {
       if (this.has(project, id)) bad(`${id} already exists in ${project}; ids are never reused (update it, or leave out id for the next free one)`);
+      if (this.editHas(project, id)) bad(`${id} is an edit request in ${project}; leave out id for the next free one`);
       this.db.insert(s.decisions).values({ ...cols, title: cols.title!, project, id, createdAt: at, updatedAt: at }).run();
       this.setRelations(project, id, inp);
     })();
@@ -312,6 +328,90 @@ export class Hub {
       else this.db.update(s.decisions).set({ status: "answered", updatedAt: a.at }).where(where).run();
     })();
     this.changed(a.project, a.decisionId);
+  }
+
+  // ----- edit requests (see schema.ts) -----
+  private editListeners = new Set<(project: string, path: string) => void>();
+  // An edit request was sent, replaced or resolved: the file's mark changes.
+  onEdit(fn: (project: string, path: string) => void) { this.editListeners.add(fn); }
+  private editChanged(project: string, p: string) { for (const f of this.editListeners) { try { f(project, p); } catch {} } }
+  private editHas(project: string, id: string): boolean {
+    return !!this.db.select({ id: s.edits.id }).from(s.edits).where(and(eq(s.edits.project, project), eq(s.edits.id, id))).get();
+  }
+  nextEditId(project: string): string {
+    let n = 0;
+    for (const r of this.db.select({ id: s.edits.id }).from(s.edits).where(eq(s.edits.project, project)).all()) { const m = /^E(\d+)$/.exec(r.id); if (m) n = Math.max(n, Number(m[1])); }
+    n++;
+    while (this.has(project, `E${n}`)) n++; // a folder whose decisions use E
+    return `E${n}`;
+  }
+  edit(project: string, id: string): Edit | null {
+    return this.db.select().from(s.edits).where(and(eq(s.edits.project, project), eq(s.edits.id, id))).get() ?? null;
+  }
+  // Newest first.
+  edits(project: string, statuses?: EditStatus[]): Edit[] {
+    const w = statuses?.length ? and(eq(s.edits.project, project), inArray(s.edits.status, statuses)) : eq(s.edits.project, project);
+    return this.db.select().from(s.edits).where(w).orderBy(desc(s.edits.createdAt), desc(sql`length(${s.edits.id})`), desc(s.edits.id)).all();
+  }
+  pendingEdit(project: string, p: string): Edit | null {
+    return this.db.select().from(s.edits).where(and(eq(s.edits.project, project), eq(s.edits.path, p), eq(s.edits.status, "pending"))).orderBy(desc(s.edits.createdAt)).get() ?? null;
+  }
+  // path → id of the pending edit, for the marks in the file list.
+  pendingPaths(project: string): Map<string, string> {
+    return new Map(this.db.select({ path: s.edits.path, id: s.edits.id }).from(s.edits).where(and(eq(s.edits.project, project), eq(s.edits.status, "pending"))).all().map((r) => [r.path, r.id]));
+  }
+  // The edit a file's page shows: its pending one, else the last one the agent resolved since `since`.
+  shownEdit(project: string, p: string, since: string): Edit | null {
+    return this.pendingEdit(project, p) ?? this.db.select().from(s.edits)
+      .where(and(eq(s.edits.project, project), eq(s.edits.path, p), inArray(s.edits.status, ["done", "declined"]), sql`${s.edits.updatedAt} >= ${since}`))
+      .orderBy(desc(s.edits.updatedAt)).get() ?? null;
+  }
+  // The person's edit (checked by the server). A pending edit of the same file becomes superseded.
+  createEdit(e: { project: string; path: string; base: string; text: string; note: string | null; by: string; at?: string }): Edit {
+    if (!PROJECT_RE.test(e.project)) bad("bad project name");
+    if (!checkRelPath(e.path)) bad("bad path");
+    const at = e.at ?? now();
+    let out: Edit | null = null;
+    this.sqlite.transaction(() => {
+      const old = this.pendingEdit(e.project, e.path);
+      if (old) this.db.update(s.edits).set({ status: "superseded", updatedAt: at }).where(and(eq(s.edits.project, e.project), eq(s.edits.id, old.id))).run();
+      const row = { project: e.project, id: this.nextEditId(e.project), path: e.path, base: e.base, baseSha: hash(e.base), text: e.text, textSha: hash(e.text),
+        note: e.note, replaces: old?.id ?? null, by: e.by, status: "pending" as const, createdAt: at, updatedAt: at };
+      this.db.insert(s.edits).values(row).run();
+      out = this.edit(e.project, row.id);
+    })();
+    this.editChanged(e.project, e.path);
+    return out!;
+  }
+  // The person took a pending edit back (sent the file's own text).
+  withdrawEdit(project: string, id: string, at = now()): Edit {
+    const e = this.edit(project, id);
+    if (!e || e.status !== "pending") bad(`${id} is not a pending edit of ${project}`);
+    this.db.update(s.edits).set({ status: "withdrawn", resolvedBy: "person", updatedAt: at }).where(and(eq(s.edits.project, project), eq(s.edits.id, id))).run();
+    this.editChanged(project, e!.path);
+    return this.edit(project, id)!;
+  }
+  // The agent (or artipeek, when the file came to have the person's text) closes a pending edit.
+  resolveEdit(project: string, id: string, inp: { status?: unknown; note?: unknown }, by: "agent" | "artipeek" = "agent"): Edit {
+    if (!inp || typeof inp !== "object") bad("send a JSON object");
+    const status = inp.status === "done" || inp.status === "declined" ? inp.status : bad('status must be "done" or "declined"');
+    const note = str(inp.note, "note", 4000);
+    if (status === "declined" && !note) bad("say why in note when you decline an edit");
+    const e = this.edit(project, id);
+    if (!e) bad(`${id} is not an edit request of ${project}`);
+    if (e!.status !== "pending") bad(`${id} is ${e!.status}, not pending`);
+    this.db.update(s.edits).set({ status, resolution: note, resolvedBy: by, updatedAt: now() }).where(and(eq(s.edits.project, project), eq(s.edits.id, id))).run();
+    this.editChanged(project, e!.path);
+    return this.edit(project, id)!;
+  }
+  // Edit requests as the agent hears them (GET /api/answers): one entry when sent, one more when withdrawn.
+  editNotices(project: string, since?: string) {
+    const out: { uid: string; project: string; decisionId: string; at: string; by: string; kind: "edit"; text: string; page: string }[] = [];
+    for (const e of this.db.select().from(s.edits).where(eq(s.edits.project, project)).all()) {
+      out.push({ uid: `edit-${e.id}`, project, decisionId: e.id, at: e.createdAt, by: e.by, kind: "edit", text: editLine(e), page: e.path });
+      if (e.status === "withdrawn") out.push({ uid: `edit-${e.id}-withdrawn`, project, decisionId: e.id, at: e.updatedAt, by: e.by, kind: "edit", text: editLine(e, "withdrawn"), page: e.path });
+    }
+    return since ? out.filter((a) => a.at > since) : out;
   }
 }
 

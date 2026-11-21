@@ -15,7 +15,13 @@ const usage = `artipeek-decide: raise and keep decisions in artipeek's decision 
   update <id> --file f.json                  change fields (only the ones given)
   update <id> [quick flags]
   note <id> "text" [--done]                  add a dated update ("-" reads stdin); --done marks it as done
-  answers [--since <ISO>] [--json]           what the person sent from the page (answers and explainer requests)
+  answers [--since <ISO>] [--json]           what the person sent from the page (answers, explainer and edit requests)
+
+Edit requests (the person edited a file on artipeek; you update the file yourself, then close the request):
+  edits [--status pending|done|declined|superseded|withdrawn|all] [--json]   default: pending
+  edit show <id> [--text | --base | --json]  the diff (default), the person's whole new text, or the file before
+  edit done <id> ["note"]                    you updated the file (as asked, or adapted: say how in the note)
+  edit decline <id> "why"                    you won't; the person sees why on the file
 
 Quick flags:
   --title "…"  --lane ERP  --context "markdown" | --context-file f.md
@@ -34,7 +40,7 @@ Where it goes (first found):
 const argv = process.argv.slice(2);
 const flags = new Map<string, string[]>();
 const pos: string[] = [];
-const BOOL = new Set(["--json", "--urgent", "--not-urgent", "--done", "-h", "--help"]);
+const BOOL = new Set(["--json", "--urgent", "--not-urgent", "--done", "--text", "--base", "-h", "--help"]);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a.startsWith("-") && a !== "-") {
@@ -161,7 +167,38 @@ switch (cmd) {
   case "answers": {
     const j = await call("GET", `/api/answers/${encodeURIComponent(project)}${flag("--since") ? `?since=${encodeURIComponent(flag("--since")!)}` : ""}`);
     if (has("--json")) console.log(JSON.stringify(j.answers, null, 1));
-    else for (const a of j.answers) console.log(`${a.at}  ${a.decisionId}  ${a.kind === "explain" ? "EXPLAIN " : ""}${a.uid}  by ${a.by}: ${a.text}`);
+    else for (const a of j.answers) console.log(`${a.at}  ${a.decisionId}  ${a.kind === "explain" ? "EXPLAIN " : a.kind === "edit" ? "EDIT " : ""}${a.uid}  by ${a.by}: ${a.text}`);
+    break;
+  }
+  case "edits": {
+    const j = await call("GET", `/api/edits/${encodeURIComponent(project)}?status=${encodeURIComponent(flag("--status") ?? "pending")}`);
+    if (has("--json")) console.log(JSON.stringify(j.edits, null, 1));
+    else if (!j.edits.length) console.log(`no ${flag("--status") ?? "pending"} edit requests`);
+    else for (const e of j.edits) console.log(`${e.id.padEnd(5)} ${e.status.padEnd(10)} ${e.path}  +${e.added} -${e.removed}${e.note ? `  note: ${e.note.split("\n")[0].slice(0, 80)}` : ""}`);
+    break;
+  }
+  case "edit": {
+    const [sub, id, text] = [a1, a2, pos[3]];
+    if (!sub || !id || !["show", "done", "decline"].includes(sub)) die('edit show|done|decline <id> ["note"]');
+    const E = `/api/edits/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
+    if (sub === "show") {
+      const e = (await call("GET", E)).edit;
+      if (has("--json")) console.log(JSON.stringify(e, null, 1));
+      else if (has("--text")) process.stdout.write(e.text);
+      else if (has("--base")) process.stdout.write(e.base);
+      else {
+        console.log(`${e.id}  [${e.status}]  ${e.path}  +${e.added} -${e.removed}  by ${e.by} ${e.createdAt}${e.replaces ? `  (replaces ${e.replaces})` : ""}`);
+        console.log(`  the file now: ${e.file}${e.file === "changed since" ? " (merge the change by hand)" : ""}`);
+        if (e.note) console.log(`  note: ${e.note}`);
+        if (e.resolution) console.log(`  ${e.status} (${e.resolvedBy}): ${e.resolution}`);
+        console.log(e.diff);
+        if (e.status === "pending") console.log(`Whole new text: artipeek-decide edit show ${e.id} --text > ${e.path}   then: artipeek-decide edit done ${e.id}`);
+      }
+      break;
+    }
+    if (sub === "decline" && !text) die('edit decline <id> "why"');
+    const e = (await call("PATCH", E, { status: sub === "done" ? "done" : "declined", note: text === "-" ? await stdinText() : text })).edit;
+    console.log(`${e.id}: ${e.status}`);
     break;
   }
   default: die(`unknown command ${cmd} (artipeek-decide help)`);

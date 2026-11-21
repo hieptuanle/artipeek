@@ -113,6 +113,40 @@ Then:
 The card then shows **Open explainer**. It opens as an artipeek tab, and going back to the Decisions tab brings
 the person back to the same spot.
 
+## Edit requests
+
+The person can edit a file of your folder on artipeek's edit view (the **edit** link next to **raw**). artipeek does
+**not** write the file. It hands you the new text as an **edit request** (E1, E2…), and **you** update the file, so
+you always know what changed. Until you close it, the file's page says "Edit E3 sent: waiting for the agent".
+
+It reaches you like an answer:
+
+- in folders with `answers` set, one line in `inbox/answers.jsonl` (committed by `artipeek`, then the `after` command):
+  `{"at", "uid", "id": "E3", "text": "EDIT: docs/plan.md (note: …). Update the file yourself: artipeek-decide edit show E3", "by", "page": "docs/plan.md", "kind": "edit"}`;
+- always in `artipeek-decide answers` (kind `edit`) and `artipeek-decide edits` (the pending ones).
+
+Its id is not a decision: the text always starts with `EDIT:`. Then:
+
+```bash
+artipeek-decide edit show E3            # the diff against the file as it was when sent, the person's note, where the file is now
+artipeek-decide edit show E3 --text     # the person's whole new text (--base: the file as it was)
+artipeek-decide edit done E3 "applied; also renamed the heading"   # you updated the file (as asked, or adapted: say how)
+artipeek-decide edit decline E3 "the date comes from the contract, it stays"   # you won't; the person sees why
+```
+
+1. Read the diff and the note. `the file now:` says whether the file is still as it was (`unchanged`), already has
+   the text (`has the edit`), or `changed since` (you or another agent wrote it after the person opened the editor:
+   merge by hand).
+2. Apply it: write the new text (`edit show E3 --text > docs/plan.md` when the file is unchanged), or make the same
+   change your way. Commit it as you commit your own work (and sync, so artipeek's copy has it).
+3. Close it: `edit done E3 "note"` or `edit decline E3 "why"` (a reason is required). If the file ends up with exactly
+   the person's text, artipeek marks it done by itself, but say what you did anyway when you adapted it.
+
+- **Replaced**: when the person edits the same file again before you act, the new request says `replaces E3`, and E3
+  becomes `superseded`. Apply only the newest one: its diff holds both changes.
+- **Withdrawn**: `EDIT: E3 withdrawn: leave docs/plan.md as it is.` The person took it back; don't apply it.
+- Only the person can send edits (a login or an answer device). Your token can read and close them, not send them.
+
 ## API (if you don't use the CLI)
 
 Every call: `Authorization: Bearer <token>`, JSON body with `Content-Type: application/json`. Not on the public
@@ -125,4 +159,7 @@ hostname. Errors come back as `{"ok": false, "error": "…"}` with 400/401/404.
 | `GET /api/decisions/<folder>/<id>` | one |
 | `PATCH /api/decisions/<folder>/<id>` | change fields (`from`/`dependsOn` replace the list) |
 | `POST /api/decisions/<folder>/<id>/notes` | `{"body": "markdown", "kind": "update" \| "done"}` |
-| `GET /api/answers/<folder>?since=<ISO>` | what the person sent (answers and explainer requests) |
+| `GET /api/answers/<folder>?since=<ISO>` | what the person sent (answers, explainer requests, edit requests as kind `edit`) |
+| `GET /api/edits/<folder>?status=pending` | edit requests (`pending` by default; `done`, `declined`, `superseded`, `withdrawn`, `all`) |
+| `GET /api/edits/<folder>/<id>` | one, with `diff`, `base` (the file as it was), `text` (the person's), `file` (where it is now) |
+| `PATCH /api/edits/<folder>/<id>` | `{"status": "done" \| "declined", "note": "…"}` (declined needs a note) |

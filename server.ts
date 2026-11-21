@@ -7,6 +7,8 @@
 //   POST /r/<folder>/answer from artipeek's own page, after a click on Send, and appends it to one file.
 // - Decision hub (decisions/web.ts, db/): /decisions pages, and /api/ for agents with a per-folder token (not on the
 //   public listener). Agents write decisions; only the person answers them.
+// - Edit requests: /r/<folder>/edit/<path> lets the person change a text file, and POST /r/<folder>/edit hands the new
+//   text to the folder's agent (like an answer). artipeek never writes the file; the agent does.
 // - Listens on 127.0.0.1 and, if enabled, on this machine's Tailscale IP, where every
 //   request is checked with `tailscale whois` against an allow-list of devices.
 // - Optional public listener (config "public") for Cloudflare Tunnel: every request needs a valid
@@ -26,7 +28,8 @@ import footnote from "markdown-it-footnote";
 import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js";
 import { iconFor, DIR_ICON, ICON_CSS } from "./icons.ts";
-import { openHub } from "./db/store.ts";
+import { openHub, sha256, editLine, type Edit } from "./db/store.ts";
+import { editDiff } from "./edits/diff.ts";
 import { createDecisionsWeb, DECISIONS_CSS, DECISIONS_JS } from "./decisions/web.ts";
 import { createPush, type PushConfig } from "./push/notify.ts";
 
@@ -390,7 +393,7 @@ class Root {
     if (setChanged || sig !== this.lastRecent || this.statusSig !== this.lastStatusSig) this.broadcast("tree", {});
     this.lastRecent = sig;
     this.lastStatusSig = this.statusSig;
-    if (changed.length) this.broadcast("change", changed);
+    if (changed.length) { checkEdits(this, changed); this.broadcast("change", changed); }
   }
 
   broadcast(event: string, data: unknown) {
@@ -644,12 +647,19 @@ function statusBar(root: Root, rel: string): string {
   return `<div id="stbar" class="statusbar">${statusBadge(st)}<span class="sttext">${esc(st.text)}</span>${src}</div>`;
 }
 
-async function renderMain(root: Root, rel: string, abs: string): Promise<string> {
+// The bar on top of a file: where it is, size, age, and the other views of it (edit, raw).
+function fileBar(root: Root, rel: string, links: string): string {
+  const e = root.files.get(rel)!;
+  const dir = path.posix.dirname(rel);
+  return `<div class="filebar">${MENU_BTN}<span class="crumbs" title="${esc(root.name + "/" + rel)}">${iconFor(rel, extOf(rel))} <span class="rootname">${esc(root.name)}/</span>${dir !== "." ? `<span class="dirname">${esc(dir)}/</span>` : ""}<b>${esc(path.posix.basename(rel))}</b></span><span class="meta">${fmtSize(e.size)} · ${ageTag(e.mtime)}${links}</span></div>`;
+}
+
+async function renderMain(root: Root, rel: string, abs: string, canEdit = false): Promise<string> {
   const e = root.files.get(rel)!;
   const ext = extOf(rel);
   const raw = `${root.base}/raw/${encPath(rel)}`;
-  const dir = path.posix.dirname(rel);
-  const head = `<div class="filebar">${MENU_BTN}<span class="crumbs" title="${esc(root.name + "/" + rel)}">${iconFor(rel, ext)} <span class="rootname">${esc(root.name)}/</span>${dir !== "." ? `<span class="dirname">${esc(dir)}/</span>` : ""}<b>${esc(path.posix.basename(rel))}</b></span><span class="meta">${fmtSize(e.size)} · ${ageTag(e.mtime)} · <a href="${raw}" target="_blank">raw</a></span></div>${statusBar(root, rel)}`;
+  const edit = canEdit && editable(root) && !IMAGE_EXT.has(ext) && e.size <= MAX_EDIT ? ` · <a href="${root.base}/edit/${encPath(rel)}" class="editlink">edit</a>` : "";
+  const head = `${fileBar(root, rel, `${edit} · <a href="${raw}" target="_blank">raw</a>`)}${statusBar(root, rel)}${editBar(root, rel)}`;
 
   if (ext === "html" || ext === "htm") {
     return `${head}<iframe class="htmlframe" sandbox="allow-scripts" referrerpolicy="no-referrer" src="${raw}?t=${Date.now()}"></iframe>`;
@@ -683,7 +693,7 @@ const sortCookie = (s: Sort) => `${SORT_COOKIE}=${s}; Path=/; Max-Age=31536000; 
 
 // One folder's files and folders, for its node in the file list.
 const fileLink = (root: Root, rel: string, label: string, current: string, withAge = false) =>
-  `<a href="${root.base}/view/${encPath(rel)}" data-base="${root.base}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(root.rowStatus(rel), rel)}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
+  `<a href="${root.base}/view/${encPath(rel)}" data-base="${root.base}" data-path="${esc(rel)}"${rel === current ? ' class="current"' : ""}>${iconFor(rel, extOf(rel))}<span class="name">${esc(label)}</span>${statusBadge(root.rowStatus(rel), rel)}${editMark(root, rel)}${withAge ? ageTag(root.files.get(rel)!.mtime) : ""}</a>`;
 function renderTree(root: Root, current: string, sort: Sort = "name"): string {
   const byTime = sort === "mtime";
   const walk = (n: Node, prefix: string): string => {
@@ -930,6 +940,41 @@ body.home main { max-width:760px; margin:0 auto; padding:16px; }
 .answersheet button.asend { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
 .answersheet button:disabled { opacity:.6; cursor:default; }
 @media (max-width: 760px) { .answersheet { align-items:flex-end; } }
+/* edit requests: the edit view, the sheet before Send, the bar on the file and its mark in the list */
+.editmark { flex:none; font-size:12px; line-height:1; color:#9a6700; }
+.editor { display:flex; flex-direction:column; gap:8px; }
+.editor .ehint, .editor .echanged { margin:0; font-size:13px; color:var(--muted); }
+.editor .echanged { color:#9a6700; }
+.editor textarea { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; width:100%; }
+.editor textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+.editor .etext { font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height:calc(100dvh - 300px - var(--tabh)); resize:vertical; tab-size:4; }
+.editor .enotel { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+.editor .ebtns { display:flex; gap:10px; justify-content:flex-end; align-items:center; }
+.editor .ebtns a, .editor .ebtns button, .editor .ehint button, .editor .echanged button { font:inherit; padding:8px 16px; border-radius:8px; border:1px solid var(--line); background:var(--side); color:var(--fg); cursor:pointer; text-decoration:none; }
+.editor .ehint button, .editor .echanged button { padding:2px 10px; font-size:13px; }
+.editor .esend { background:var(--accent) !important; border-color:var(--accent) !important; color:#fff !important; font-weight:600; }
+.editbar { margin:-6px 0 14px; padding:6px 10px; border:1px solid #f2e08b; border-radius:8px; background:#fff8c5; font-size:13px; }
+.editbar.done { border-color:#aceebb; background:#dafbe1; }
+.editbar.declined { border-color:var(--line); background:var(--side); }
+.editbar p { margin:0; }
+.editbar summary { cursor:pointer; color:var(--muted); margin-top:2px; }
+.editbar .enoteview { margin:6px 0 0; white-space:pre-wrap; }
+pre.diff { margin:6px 0 0; padding:8px 0; background:var(--bg); border:1px solid var(--line); border-radius:6px; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; max-height:50vh; overflow:auto; white-space:pre; }
+pre.diff span { display:inline-block; min-width:100%; padding:0 10px; }
+pre.diff .da, .dstat .da { color:#1a7f37; } pre.diff .da { background:#dafbe1; }
+pre.diff .dd, .dstat .dd { color:#cf222e; } pre.diff .dd { background:#ffebe9; }
+pre.diff .dh, pre.diff .dn { color:var(--muted); }
+.answersheet.editsheet .box { width:min(760px, 100%); }
+.answersheet.editsheet pre.diff { max-height:45vh; }
+@media (prefers-color-scheme: dark) {
+  .editmark, .editor .echanged { color:#d29922; }
+  .editbar { border-color:rgba(187,128,9,.4); background:rgba(187,128,9,.12); }
+  .editbar.done { border-color:rgba(46,160,67,.4); background:rgba(46,160,67,.12); }
+  .editbar.declined { border-color:var(--line); background:var(--side); }
+  pre.diff .da { background:rgba(46,160,67,.15); color:#3fb950; } .dstat .da { color:#3fb950; }
+  pre.diff .dd { background:rgba(248,81,73,.15); color:#ff7b72; } .dstat .dd { color:#ff7b72; }
+}
+@media (max-width: 760px) { .editor .etext { font-size:16px; min-height:calc(100dvh - 330px - var(--tabh)); } /* no iOS zoom on focus */ }
 ${DECISIONS_CSS}
 /* phone: the sidebar becomes a drawer */
 @media (max-width: 760px) {
@@ -971,8 +1016,8 @@ function appAside(scope: Scope, active: Root | null, current: string, sort: Sort
   return `<aside><header><div class="headrow"><a class="brand" href="/">artipeek</a><span id="sort" role="group" aria-label="Sort"><button type="button" data-sort="name" aria-pressed="${sort === "name"}">Name</button><button type="button" data-sort="mtime" aria-pressed="${sort === "mtime"}">Modified</button></span></div><input id="filter" type="search" placeholder="Filter files…" autocomplete="off" enterkeyhint="go"></header>
 <nav id="tree">${renderNav(scope, active, current, sort, onDecisions)}</nav></aside>`;
 }
-function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope): string {
-  return shell({ title: current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name, bodyClass: "app", data: { kind: "file", base: root.base, path: current }, aside: appAside(scope, root, current, sort, false), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
+function filePage(root: Root, current: string, mainHtml: string, nonce: string, sort: Sort, scope: Scope, mode: "view" | "edit" = "view"): string {
+  return shell({ title: (mode === "edit" ? "Edit " : "") + (current ? `${path.posix.dirname(current) === "." ? "" : path.posix.basename(path.posix.dirname(current)) + "/"}${path.posix.basename(current)} · ${root.name}` : root.name), bodyClass: "app", data: { kind: "file", base: root.base, path: current, mode }, aside: appAside(scope, root, current, sort, false), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${mainHtml}</section>`, nonce });
 }
 function decisionsPage(scope: Scope, q: string, paneHtml: string, nonce: string, sort: Sort): string {
   return shell({ title: "Decisions", bodyClass: "app", data: { kind: "dec", q }, aside: appAside(scope, null, "", sort, true), main: `<nav id="tabs" aria-label="Open tabs" hidden></nav><section class="pane">${paneHtml}</section>`, nonce });
@@ -1049,6 +1094,8 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
   if (req.method === "POST") {
     const am = /^\/r\/([^/]+)\/answer$/.exec(p0);
     if (am) return answer(req, am[1], scope, who);
+    const em = /^\/r\/([^/]+)\/edit$/.exec(p0);
+    if (em) return submitEdit(req, em[1], scope, who);
     // the iOS app's push registration: the person only, like answers (see push/notify.ts)
     if (p0.startsWith("/_/push/")) return push.http(req, p0, answerBy(who), who && "email" in who ? "public" : "all");
   }
@@ -1117,7 +1164,7 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
     return new Response(renderTree(root, url.searchParams.get("current") ?? "", sort), { headers: HTML });
   }
 
-  const am = /^\/(view|raw|part\/main|part\/status)\/(.+)$/.exec(rest);
+  const am = /^\/(view|raw|edit|part\/main|part\/status|part\/edit)\/(.+)$/.exec(rest);
   if (!am) return notFound();
   // An old bookmark of the folder's own decisions page (any file named decisions.html, e.g. docs/explainers/) goes to
   // the hub, once the folder has decisions there. ?file=1 still shows the file.
@@ -1127,7 +1174,14 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
   const f = rel ? root.resolve(rel) : null;
   if (!f) return notFound();
 
-  if (am[1] === "part/status") return new Response(statusBar(root, f.rel), { headers: HTML });
+  if (am[1] === "part/status") return new Response(statusBar(root, f.rel) + editBar(root, f.rel), { headers: HTML });
+  if (am[1] === "edit" || am[1] === "part/edit") {
+    const editHtml = await renderEdit(root, f.rel, !!answerBy(who));
+    if (am[1] === "part/edit") return new Response(editHtml, { headers: HTML });
+    const nonce = randomBytes(16).toString("base64");
+    const { sort } = sortFrom(req, url);
+    return new Response(filePage(root, f.rel, editHtml, nonce, sort, scope, "edit"), { headers: { ...HTML, "Content-Security-Policy": pageCsp(nonce) } });
+  }
   if (am[1] === "raw") {
     const ext = extOf(f.rel);
     // HTML may run its own inline scripts only inside artipeek's file page: the browser says so with
@@ -1151,7 +1205,7 @@ async function handle(req: Request, scope: Scope = null, who: Who = null): Promi
       },
     });
   }
-  const mainHtml = await renderMain(root, f.rel, f.abs);
+  const mainHtml = await renderMain(root, f.rel, f.abs, !!answerBy(who));
   if (am[1] === "part/main") return new Response(mainHtml, { headers: HTML });
   const nonce = randomBytes(16).toString("base64");
   const { sort, fromParam } = sortFrom(req, url);
@@ -1249,8 +1303,161 @@ async function saveAnswer(root: Root, cfg: AnswersCfg, rec: Record<string, strin
   return true;
 }
 
+// ---------- edit requests ----------
+// The edit view (/r/<folder>/edit/<path>): the person changes a text file there, and artipeek hands the new text to the
+// folder's agent as an edit request (E1, E2…), through the same channel as answers: the hub (GET /api/answers, kind
+// "edit") and, with "answers" set, one line in the answers file + a commit + the after command. artipeek never writes the
+// file: the agent updates it, then marks the request done or declined (artipeek-decide edit done|decline). Only in
+// folders with an agent (answers set, or an agent token), and only from the person (a login or an answer device).
+const MAX_EDIT = 512 * 1024; // bytes
+const EDIT_SHOWN_MS = 3 * 86400_000; // a done or declined edit stays on the file's page this long
+function editable(root: Root): boolean { return answersFor.has(root.name) || hub.hasToken(root.name); }
+// The file list's marks (path → pending edit id), per folder; dropped when an edit changes.
+const editMarks = new Map<string, Map<string, string>>();
+function marksFor(root: Root): Map<string, string> {
+  let m = editMarks.get(root.name);
+  if (!m) editMarks.set(root.name, (m = hub.pendingPaths(root.name)));
+  return m;
+}
+function editMark(root: Root, rel: string): string {
+  const id = marksFor(root).get(rel);
+  return id ? `<span class="editmark" title="Edit ${esc(id)} sent: waiting for the agent">✎</span>` : "";
+}
+hub.onEdit((project, rel) => { editMarks.delete(project); toAll(project, "edit", { root: project, path: rel }); });
+
+// The file as text, if the edit view takes it: not an image, not binary, valid UTF-8, at most MAX_EDIT.
+async function editText(root: Root, rel: string): Promise<string | null> {
+  const f = root.resolve(rel);
+  if (!f || IMAGE_EXT.has(extOf(rel))) return null;
+  try {
+    if (statSync(f.abs).size > MAX_EDIT) return null;
+    const buf = new Uint8Array(await readFile(f.abs));
+    return isBinary(buf) ? null : new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch { return null; }
+}
+// A pending edit is done by itself when the file comes to have exactly the person's text.
+function checkEdits(root: Root, rels: string[]) {
+  const marks = marksFor(root);
+  for (const rel of rels) {
+    const id = marks.get(rel);
+    const f = id ? root.resolve(rel) : null;
+    if (!id || !f) continue;
+    try {
+      const e = hub.edit(root.name, id);
+      if (e?.status === "pending" && sha256(new TextDecoder().decode(readFileSync(f.abs))) === e.textSha)
+        hub.resolveEdit(root.name, id, { status: "done", note: "The file now has your text." }, "artipeek");
+    } catch {}
+  }
+}
+
+// Under the status bar of a file: its pending edit, or the last one the agent resolved (for a few days).
+function editBar(root: Root, rel: string): string {
+  const e = hub.shownEdit(root.name, rel, new Date(Date.now() - EDIT_SHOWN_MS).toISOString());
+  if (!e) return `<div id="edbar" hidden></div>`;
+  const d = editDiff(rel, e.base, e.text);
+  const change = `<details><summary>Your change <span class="dstat"><span class="da">+${d.added}</span> <span class="dd">−${d.removed}</span></span></summary>${d.html}${e.note ? `<p class="enoteview">Your note: ${esc(e.note)}</p>` : ""}</details>`;
+  if (e.status === "pending") {
+    let since = "";
+    try { const f = root.resolve(rel); if (f && sha256(new TextDecoder().decode(readFileSync(f.abs))) !== e.baseSha) since = " The file changed since; the agent hasn't marked the edit done yet."; } catch {}
+    return `<div id="edbar" class="editbar pending" data-edit="${esc(e.id)}"><p><b>✎ Edit ${esc(e.id)} sent</b> ${ageTag(Date.parse(e.createdAt))}: waiting for the agent to update the file.${since}</p>${change}</div>`;
+  }
+  const what = e.resolvedBy === "artipeek" ? "The file now has your text." : e.status === "done" ? `The agent updated the file${e.resolution ? `: ${esc(e.resolution)}` : "."}` : `The agent declined it${e.resolution ? `: ${esc(e.resolution)}` : "."}`;
+  return `<div id="edbar" class="editbar ${e.status}" data-edit="${esc(e.id)}"><p><b>${e.status === "done" ? "✓" : "✗"} Edit ${esc(e.id)} ${e.status}</b> ${ageTag(Date.parse(e.updatedAt))}. ${what}</p>${change}</div>`;
+}
+
+// The edit view's pane: the file's text (or the pending edit's, to change it further), a note, Send.
+async function renderEdit(root: Root, rel: string, canEdit: boolean): Promise<string> {
+  const view = `${root.base}/view/${encPath(rel)}`;
+  const head = `${fileBar(root, rel, ` · editing · <a href="${view}">view</a> · <a href="${root.base}/raw/${encPath(rel)}" target="_blank">raw</a>`)}${statusBar(root, rel)}${editBar(root, rel)}`;
+  const stop = (why: string) => `${head}<p class="note">${why} <a href="${view}">Back to the file</a></p>`;
+  if (!editable(root)) return stop("Edits go to the folder's agent, and this folder has none (no answers file, no agent token).");
+  if (!canEdit) return stop("This device can't send edits. Use the public link (login) or an answer device.");
+  const text = await editText(root, rel);
+  if (text === null) return stop(`This file can't be edited here (an image, binary, or over ${MAX_EDIT / 1024} kB).`);
+  const pending = hub.pendingEdit(root.name, rel);
+  const start = pending ? pending.text : text;
+  const md = /\.(md|markdown|txt)$/i.test(rel);
+  const hint = pending
+    ? `You're changing your pending edit <b>${esc(pending.id)}</b>: sending replaces it. <button type="button" class="ewithdraw" data-ewithdraw="${esc(pending.id)}">Take ${esc(pending.id)} back</button>`
+    : "Nothing changes here when you send: your edit goes to the folder's agent as a request, and the agent updates the file.";
+  // The newline after <textarea> is dropped by the HTML parser, so a file that starts with one keeps it.
+  return `${head}<div class="editor" data-start="${sha256(start)}"${pending ? ` data-pending="${esc(pending.id)}"` : ""}><p class="ehint">${hint}</p>`
+    + `<p class="echanged" hidden>The file changed on disk since you opened it. <button type="button" data-ereload>Load the new version</button> (drops your changes), or send anyway: artipeek checks first.</p>`
+    + `<textarea class="etext" aria-label="Text of ${esc(path.posix.basename(rel))}" spellcheck="${md}" autocapitalize="off" autocomplete="off" autocorrect="off"${md ? "" : ' wrap="off"'}>\n${esc(start)}</textarea>`
+    + `<label class="enotel">Note for the agent (optional)<textarea class="enote" rows="2" maxlength="2000"></textarea></label>`
+    + `<div class="ebtns"><a class="ecancel" href="${view}">Cancel</a><button type="button" class="esend" data-esend>Send to the agent…</button></div></div>`;
+}
+
+// POST /r/<folder>/edit {path, start, text, note, preview?} or {path, withdraw: "E3", preview?}. start = sha256 of the
+// text the editor began with: the file's, or the pending edit's. Same rules as answer(): the person only, from
+// artipeek's own page.
+async function submitEdit(req: Request, rawName: string, scope: Scope, who: Who): Promise<Response> {
+  const name = decode(rawName);
+  const root = name && (!scope || scope.has(name)) ? roots.get(name) : undefined;
+  if (!root || !editable(root)) return notFound();
+  const by = answerBy(who);
+  if (!by) return jsonRes(403, { ok: false, error: "edits need the public link (login) or a device in answerDevices" });
+  if (req.headers.get("sec-fetch-site") !== "same-origin" || req.headers.get("x-artipeek") !== "edit")
+    return jsonRes(403, { ok: false, error: "not from artipeek's page" });
+  if (!(req.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return jsonRes(415, { ok: false, error: "JSON only" });
+  const raw = await req.text();
+  if (raw.length > 3 * MAX_EDIT) return jsonRes(413, { ok: false, error: "too big" });
+  let b: any;
+  try { b = JSON.parse(raw); } catch { return jsonRes(400, { ok: false, error: "bad JSON" }); }
+  const f = typeof b?.path === "string" && b.path.length <= 1000 ? root.resolve(b.path) : null;
+  if (!f) return jsonRes(404, { ok: false, error: "no such file" });
+  const cur = await editText(root, f.rel);
+  if (cur === null) return jsonRes(400, { ok: false, error: "this file can't be edited here" });
+  const pending = hub.pendingEdit(root.name, f.rel);
+  const preview = b.preview === true;
+  const withdraw = async (e: Edit) => {
+    if (preview) return jsonRes(200, { ok: true, preview: true, withdraw: e.id });
+    const w = hub.withdrawEdit(root.name, e.id);
+    const committed = await deliverEdit(root, w, "withdrawn", by);
+    return jsonRes(200, { ok: true, id: w.id, withdrawn: true, at: w.updatedAt, committed });
+  };
+  if (b.withdraw !== undefined) {
+    if (!pending || pending.id !== b.withdraw) return jsonRes(409, { ok: false, error: "that edit is no longer pending" });
+    return withdraw(pending);
+  }
+  if (typeof b.text !== "string" || b.text.length > MAX_EDIT) return jsonRes(400, { ok: false, error: `send the text (at most ${MAX_EDIT / 1024} kB)` });
+  let text = b.text.replace(/\r\n?/g, "\n");
+  if (cur.includes("\r\n")) text = text.replace(/\n/g, "\r\n"); // keep the file's line endings
+  const note = typeof b.note === "string" ? b.note.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim().slice(0, 2000) || null : null;
+  if (b.start !== sha256(cur) && !(pending && b.start === pending.textSha))
+    return jsonRes(409, { ok: false, changed: true, error: "The file changed since you opened it. Load the new version, then make your change again." });
+  if (text === cur) {
+    if (!pending) return jsonRes(400, { ok: false, error: "Nothing to send: this is the file as it is." });
+    return withdraw(pending); // the file's own text again: take the pending edit back
+  }
+  if (pending && text === pending.text) return jsonRes(400, { ok: false, error: `That's your edit ${pending.id} as it is; it's already with the agent.` });
+  const d = editDiff(f.rel, cur, text);
+  if (preview) return jsonRes(200, { ok: true, preview: true, added: d.added, removed: d.removed, diff: d.html, replaces: pending?.id ?? null });
+  const e = hub.createEdit({ project: root.name, path: f.rel, base: cur, text, note, by });
+  const committed = await deliverEdit(root, e, "sent", by);
+  return jsonRes(200, { ok: true, id: e.id, at: e.createdAt, replaces: e.replaces, committed });
+}
+// Tells the agent: one line in the answers file (+ commit + after), when the folder has one. It is in the hub already
+// (GET /api/answers lists it as kind "edit").
+async function deliverEdit(root: Root, e: Edit, what: "sent" | "withdrawn", by: string): Promise<boolean> {
+  const cfg = answersFor.get(root.name);
+  if (!cfg) { console.log(`artipeek: edit ${e.id} ${what} in the hub for ${root.name} by ${by}`); return false; }
+  const rec: Record<string, string> = { at: what === "sent" ? e.createdAt : e.updatedAt, uid: randomBytes(6).toString("hex"), id: e.id, text: editLine(e, what), by, page: e.path, kind: "edit" };
+  const job = (answerQueue.get(root.name) ?? Promise.resolve()).then(() => saveAnswer(root, cfg, rec));
+  answerQueue.set(root.name, job.catch(() => {}));
+  try {
+    const committed = await job;
+    console.log(`artipeek: edit ${e.id} ${what === "sent" ? "saved" : "withdrawn"} in ${root.name} by ${by}${committed ? ", committed" : ", not committed"}`);
+    return committed;
+  } catch (err) {
+    console.log(`artipeek: edit ${e.id} for ${root.name} not in the answers file: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 const server = Bun.serve({ hostname: HOST, port: PORT, idleTimeout: 0 /* SSE streams stay open */, fetch: (req) => handle(req) });
 console.log(`artipeek: http://${HOST}:${server.port}  config=${CONFIG_PATH}  roots=${[...roots.keys()].join(",")}`);
+for (const r of roots.values()) checkEdits(r, [...marksFor(r).keys()]); // files the agent changed while artipeek was off
 
 // ---------- tailnet ----------
 // Also listen on this machine's Tailscale IPv4 (100.x). The laptop can switch tailnets (its IP

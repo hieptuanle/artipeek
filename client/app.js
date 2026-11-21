@@ -50,8 +50,8 @@
 
   // ----- app tabs -----
   // Each tab has a pane in the page, hidden unless it is the active tab, so switching back fetches nothing. A tab is a
-  // file (base /r/<folder>, path) or the Decisions tab (one at most; q = its filters). The list is in sessionStorage:
-  // every browser tab has its own, and it survives a reload.
+  // file (base /r/<folder>, path; mode "view" or "edit") or the Decisions tab (one at most; q = its filters). The list
+  // is in sessionStorage: every browser tab has its own, and it survives a reload.
   const TABS = "artipeek-tabs";
   const DEC = "dec";
   const tabs = [];
@@ -59,17 +59,20 @@
   history.scrollRestoration = "manual";
 
   const isDec = (t) => t.kind === DEC;
+  const isEdit = (t) => t.kind === "file" && t.mode === "edit";
+  // a file tab in edit mode: /r/<folder>/edit/<path> and its pane part/edit
+  const fileKind = (t, kind) => (t.mode !== "edit" ? kind : kind === "view" ? "edit" : kind === "part/main" ? "part/edit" : kind);
   const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
   const tabUrl = (t, kind) => isDec(t)
     ? (kind === "view" ? "/decisions" : "/decisions/part/page") + (t.q ? "?" + t.q : "")
-    : t.base + "/" + kind + "/" + encPath(t.path);
+    : t.base + "/" + fileKind(t, kind) + "/" + encPath(t.path);
   const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
   const nameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
   const rootOf = (base) => { try { return decodeURIComponent(base.slice(3)); } catch { return base.slice(3); } };
   // What an address opens: a file, or the Decisions tab (/decisions?…, /r/<folder>/decisions = that project).
   function parseUrl(u) {
-    let m = /^(\/r\/[^/]+)\/(?:view|raw)\/(.+)$/.exec(u.pathname);
-    if (m) { try { return { kind: "file", base: m[1], path: m[2].split("/").map(decodeURIComponent).join("/") }; } catch { return null; } }
+    let m = /^(\/r\/[^/]+)\/(view|raw|edit)\/(.+)$/.exec(u.pathname);
+    if (m) { try { return { kind: "file", base: m[1], path: m[3].split("/").map(decodeURIComponent).join("/"), mode: m[2] === "edit" ? "edit" : "view" }; } catch { return null; } }
     if (/^\/decisions\/?$/.test(u.pathname)) return { kind: DEC, q: u.search.slice(1) };
     m = /^\/r\/([^/]+)\/decisions\/?$/.exec(u.pathname);
     if (m) { const q = new URLSearchParams(u.search); try { q.set("project", decodeURIComponent(m[1])); } catch { return null; } return { kind: DEC, q: q.toString() }; }
@@ -86,12 +89,12 @@
       pane.innerHTML = note("Loading…");
       main.appendChild(pane);
     }
-    const t = { kind: f.kind === DEC ? DEC : "file", base: f.base || "", path: f.path || "", q: f.q || "", y: y || 0, pane, loaded: false, seq: 0, hash: "", ctl: null };
+    const t = { kind: f.kind === DEC ? DEC : "file", mode: f.mode === "edit" ? "edit" : "view", base: f.base || "", path: f.path || "", q: f.q || "", y: y || 0, pane, loaded: false, seq: 0, hash: "", ctl: null, dirty: false };
     tabs.push(t);
     return t;
   }
   function saveTabs() {
-    try { sessionStorage.setItem(TABS, JSON.stringify(tabs.map((t) => ({ kind: t.kind, base: t.base, path: t.path, q: t.q, y: t.y })))); } catch {}
+    try { sessionStorage.setItem(TABS, JSON.stringify(tabs.map((t) => ({ kind: t.kind, mode: t.mode, base: t.base, path: t.path, q: t.q, y: t.y })))); } catch {}
   }
   function readTabs() {
     try {
@@ -99,7 +102,7 @@
       return Array.isArray(a) ? a.filter((s) => s && (s.kind === DEC ? typeof s.q === "string" : typeof s.path === "string" && /^\/r\/[^/]+$/.test(s.base))) : [];
     } catch { return []; }
   }
-  const label = (t) => (isDec(t) ? "Decisions" : nameOf(t.path));
+  const label = (t) => (isDec(t) ? "Decisions" : (isEdit(t) ? "✎ " : "") + nameOf(t.path));
 
   function drawTabs() {
     tabbar.hidden = tabs.length < 2;
@@ -114,7 +117,7 @@
       a.href = tabUrl(t, "view");
       a.title = isDec(t) ? "Decisions" : rootOf(t.base) + "/" + t.path;
       // Many files share a name (email.html, README.md): then show the folder too.
-      a.textContent = (!isDec(t) && same[label(t)] > 1 && dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + label(t);
+      a.textContent = (!isDec(t) && same[label(t)] > 1 && dirOf(t.path) ? (isEdit(t) ? "✎ " : "") + nameOf(dirOf(t.path)) + "/" + nameOf(t.path) : label(t));
       const x = document.createElement("button");
       x.type = "button";
       x.textContent = "×";
@@ -141,7 +144,7 @@
 
   function title(t) {
     // Parent folder first, then the root (project): many folders hold a decisions.html or README.md.
-    document.title = isDec(t) ? "Decisions · artipeek" : (dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path) + " · " + rootOf(t.base) + " · artipeek";
+    document.title = isDec(t) ? "Decisions · artipeek" : (isEdit(t) ? "Edit " : "") + (dirOf(t.path) ? nameOf(dirOf(t.path)) + "/" : "") + nameOf(t.path) + " · " + rootOf(t.base) + " · artipeek";
   }
 
   function activate(t, how, hash) {
@@ -167,6 +170,16 @@
 
   function openTab(f, hash, how) {
     let t = findTab(f);
+    if (t && !isDec(t) && f.mode && f.mode !== t.mode) { // the same file, in the other view (edit ⇄ view)
+      if (isEdit(t) && t.dirty && !confirm("Drop your changes to " + nameOf(t.path) + "?")) return;
+      if (isEdit(t)) dropDraft(t);
+      t.mode = f.mode; t.loaded = false; t.dirty = false; t.seq++; t.y = 0;
+      if (t === active) {
+        if (how !== "none") history[how === "replace" ? "replaceState" : "pushState"](null, "", tabUrl(t, "view") + (hash || ""));
+        title(t); drawTabs(); saveTabs(); scrollTo(0, 0); load(t);
+        return;
+      }
+    }
     if (t && isDec(t) && f.q && f.q !== t.q) { // the Decisions tab, asked with other filters
       t.q = f.q;
       if (t.ctl) t.ctl.apply(f.q); else t.loaded = false;
@@ -177,6 +190,8 @@
   function closeTab(t) {
     const i = tabs.indexOf(t);
     if (i < 0 || tabs.length < 2) return;
+    if (isEdit(t) && t.dirty && !confirm("Drop your changes to " + nameOf(t.path) + "?")) return;
+    if (isEdit(t)) dropDraft(t);
     tabs.splice(i, 1);
     t.seq++; // drop any fetch still running for it
     if (t.ctl) { t.ctl.destroy(); t.ctl = null; }
@@ -198,6 +213,7 @@
   // onlyIfNewer: after a gap in the live stream. Don't reset a page (an iframe restarts) if its file didn't change.
   async function load(t, onlyIfNewer) {
     if (isDec(t) && onlyIfNewer) { if (t.ctl) t.ctl.event("all", {}); return; } // it patches itself
+    if (isEdit(t) && onlyIfNewer && t.loaded) { loadStatus(t); return; } // never under the person's typing
     const seq = ++t.seq;
     let r = null, html = "";
     try { r = await fetch(tabUrl(t, "part/main")); html = await r.text(); } catch { r = null; }
@@ -211,6 +227,7 @@
       ages(t.pane);
       t.loaded = true;
       if (isDec(t)) mountDec(t);
+      if (isEdit(t)) mountEditor(t);
       if (t === active && !(t.hash && jump(t.hash))) scrollTo(0, first ? t.y : y);
       t.hash = "";
       if (t === active && t.ctl) t.ctl.onShow(true);
@@ -221,10 +238,17 @@
       t.pane.innerHTML = note('Could not load this file. <button type="button" data-retry>Try again</button>');
     }
   }
+  // The status bar and the edit bar (#stbar, #edbar) under the file bar.
   async function loadStatus(t) {
-    const r = await fetch(tabUrl(t, "part/status"));
+    let r = null;
+    try { r = await fetch(tabUrl(t, "part/status")); } catch {}
     const el = t.pane.querySelector("#stbar");
-    if (r.ok && el) el.outerHTML = await r.text();
+    if (!r || !r.ok || !el) return;
+    const html = await r.text();
+    const ed = t.pane.querySelector("#edbar");
+    if (ed) ed.remove();
+    el.outerHTML = html;
+    ages(t.pane);
   }
 
   // ----- one live stream for every folder and the decisions -----
@@ -236,11 +260,19 @@
       const dirs = d.paths.filter((p) => /\.(md|markdown|html?)$/i.test(p)).map(dirOf);
       for (const t of tabs) {
         if (isDec(t) || t.base !== base || !t.loaded) continue;
-        if (d.paths.includes(t.path)) load(t);
-        else if (dirs.includes(dirOf(t.path))) loadStatus(t);
+        if (d.paths.includes(t.path)) {
+          if (!isEdit(t)) load(t);
+          else { const n = t.pane.querySelector(".echanged"); if (n) n.hidden = false; loadStatus(t); } // keep what the person typed
+        } else if (dirs.includes(dirOf(t.path))) loadStatus(t);
       }
     });
     es.addEventListener("tree", (ev) => { refreshRoot(JSON.parse(ev.data).root); refreshRecent(); });
+    // an edit request was sent, replaced or resolved: the file's edit bar and its mark in the list
+    es.addEventListener("edit", (ev) => {
+      const d = JSON.parse(ev.data), base = "/r/" + encodeURIComponent(d.root);
+      for (const t of tabs) if (!isDec(t) && t.loaded && t.base === base && t.path === d.path) loadStatus(t);
+      refreshRoot(d.root); refreshRecent();
+    });
     for (const name of ["d", "ref", "all", "tick"]) es.addEventListener(name, (ev) => {
       const d = JSON.parse(ev.data);
       const t = tabs.find(isDec);
@@ -382,6 +414,10 @@
     const x = e.target.closest("[data-close]");
     if (x) { closeTab(tabs[Number(x.dataset.close)]); return; }
     if (e.target.closest("[data-retry]")) { load(active); return; }
+    if (e.target.closest("[data-esend]")) { askEdit(active); return; }
+    const wd = e.target.closest("[data-ewithdraw]");
+    if (wd) { askEdit(active, wd.dataset.ewithdraw); return; }
+    if (e.target.closest("[data-ereload]")) { if (active.dirty && !confirm("Drop your changes and load the file as it is now?")) return; dropDraft(active); active.dirty = false; load(active); return; }
     const a = e.target.closest("a[href]");
     if (!a || e.defaultPrevented || e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || a.target || a.hasAttribute("download")) return;
     const u = new URL(a.href);
@@ -472,6 +508,94 @@
     });
     document.body.appendChild(s); sheet = s; send.focus();
   }
+  // ----- edit view: the person's edit goes to the folder's agent as a request; artipeek never writes the file -----
+  // What was typed stays in this browser tab (sessionStorage) until sent or dropped, if the editor still starts from
+  // the same text (data-start).
+  const draftKey = (t) => "artipeek-edit:" + t.base + "/" + t.path;
+  function dropDraft(t) { try { sessionStorage.removeItem(draftKey(t)); } catch (x) {} }
+  function mountEditor(t) {
+    t.dirty = false;
+    const ed = t.pane.querySelector(".editor");
+    if (!ed) return;
+    const ta = ed.querySelector(".etext"), nt = ed.querySelector(".enote"), orig = ta.value;
+    let d = null;
+    try { d = JSON.parse(sessionStorage.getItem(draftKey(t)) || "null"); } catch (x) {}
+    if (d && d.start === ed.dataset.start && typeof d.text === "string") { ta.value = d.text; nt.value = d.note || ""; }
+    const keep = () => {
+      t.dirty = ta.value !== orig || nt.value.trim() !== "";
+      try { if (t.dirty) sessionStorage.setItem(draftKey(t), JSON.stringify({ start: ed.dataset.start, text: ta.value, note: nt.value })); else dropDraft(t); } catch (x) {}
+    };
+    keep();
+    ta.addEventListener("input", keep);
+    nt.addEventListener("input", keep);
+    ed.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "s") { e.preventDefault(); askEdit(t); } });
+  }
+  // artipeek's own sheet: the change as a diff (from the server), then Send. withdraw: take a pending edit back.
+  async function askEdit(t, withdraw) {
+    const ed = t && isEdit(t) && t.pane.querySelector(".editor");
+    if (!ed) return;
+    const body = withdraw ? { path: t.path, withdraw: withdraw }
+      : { path: t.path, start: ed.dataset.start, text: ed.querySelector(".etext").value, note: ed.querySelector(".enote").value };
+    const post = async (extra) => {
+      const r = await fetch(t.base + "/edit", { method: "POST", headers: { "Content-Type": "application/json", "X-Artipeek": "edit" }, body: JSON.stringify(Object.assign({}, body, extra)) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { const err = new Error(j.error || "HTTP " + r.status); err.changed = !!j.changed; throw err; }
+      return j;
+    };
+    if (sheet) sheet.remove();
+    const s = document.createElement("div");
+    s.className = "answersheet editsheet"; s.setAttribute("role", "dialog"); s.setAttribute("aria-modal", "true");
+    s.innerHTML = '<div class="box"><p class="q"></p><p class="aid"></p><div class="echange"></div><pre class="atext" hidden></pre><p class="amsg" aria-live="polite">Checking…</p><div class="btns"><button type="button" class="acancel">Cancel</button><button type="button" class="asend" disabled>Send</button></div></div>';
+    s.querySelector(".q").textContent = withdraw ? "Take your edit " + withdraw + " back?" : "Send this edit to the agent?";
+    s.querySelector(".aid").textContent = rootOf(t.base) + "/" + t.path;
+    const msg = s.querySelector(".amsg"), send = s.querySelector(".asend"), change = s.querySelector(".echange");
+    const close = () => { s.remove(); if (sheet === s) sheet = null; };
+    const failed = (err) => {
+      msg.textContent = (err.changed ? "" : "Not sent: ") + err.message;
+      if (err.changed) {
+        const b = document.createElement("button");
+        b.type = "button"; b.textContent = "Load the new version";
+        b.addEventListener("click", () => { dropDraft(t); t.dirty = false; close(); load(t); });
+        msg.append(" ", b);
+      }
+    };
+    s.querySelector(".acancel").addEventListener("click", close);
+    s.addEventListener("click", (ev) => { if (ev.target === s) close(); });
+    s.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+    document.body.appendChild(s); sheet = s;
+    let p;
+    try { p = await post({ preview: true }); } catch (err) { failed(err); return; }
+    if (sheet !== s) return;
+    if (p.withdraw) {
+      s.querySelector(".q").textContent = "Take your edit " + p.withdraw + " back?";
+      msg.textContent = "The agent is told to leave the file as it is.";
+    } else {
+      change.innerHTML = p.diff; // escaped by the server
+      const sum = document.createElement("p");
+      sum.className = "aid";
+      sum.textContent = "+" + p.added + " −" + p.removed + " lines" + (p.replaces ? ". Replaces your pending edit " + p.replaces + "." : ".") + " The agent updates the file; nothing changes until then.";
+      change.prepend(sum);
+      if (body.note && body.note.trim()) { const n = s.querySelector(".atext"); n.textContent = "Note: " + body.note.trim(); n.hidden = false; }
+      msg.textContent = "";
+    }
+    send.disabled = false; send.focus();
+    send.addEventListener("click", async (ev) => {
+      if (!ev.isTrusted || send.disabled) return;
+      send.disabled = true; msg.textContent = "Sending…";
+      try {
+        const j = await post({});
+        msg.textContent = j.withdrawn ? j.id + " taken back." : "Sent as " + j.id + ". The agent will update the file.";
+        dropDraft(t); t.dirty = false;
+        setTimeout(() => { // back to the file, now with its edit bar
+          close();
+          if (!tabs.includes(t) || !isEdit(t)) return;
+          if (t === active) openTab({ kind: "file", base: t.base, path: t.path, mode: "view" }, "", "replace");
+          else { t.mode = "view"; t.loaded = false; t.seq++; drawTabs(); saveTabs(); load(t); }
+        }, 1200);
+      } catch (err) { failed(err); send.disabled = !!err.changed; }
+    });
+  }
+
   addEventListener("popstate", () => {
     const f = parseUrl(location);
     if (f) openTab(f, location.hash, "none"); else location.reload();
@@ -480,16 +604,17 @@
   addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); }); // back from another page: the list may have moved on
 
   // ----- start: the saved list, plus the tab the server just rendered -----
-  const here = body.dataset.kind === DEC ? { kind: DEC, q: body.dataset.q || "" } : { kind: "file", base: body.dataset.base, path: body.dataset.path };
+  const here = body.dataset.kind === DEC ? { kind: DEC, q: body.dataset.q || "" } : { kind: "file", base: body.dataset.base, path: body.dataset.path, mode: body.dataset.mode === "edit" ? "edit" : "view" };
   const firstPane = main.querySelector(".pane");
   for (const s of readTabs()) {
     if (findTab(s)) continue;
     const isHere = s.kind === DEC ? here.kind === DEC : here.kind !== DEC && s.base === here.base && s.path === here.path;
-    addTab(isHere ? Object.assign({}, s, here.kind === DEC ? { q: here.q } : {}) : s, s.y, isHere ? firstPane : null);
+    addTab(isHere ? Object.assign({}, s, here.kind === DEC ? { q: here.q } : { mode: here.mode }) : s, s.y, isHere ? firstPane : null);
   }
   const start = findTab(here) || addTab(here, 0, firstPane);
   start.loaded = true;
   if (isDec(start)) { start.q = here.q; mountDec(start); }
+  if (isEdit(start)) mountEditor(start);
   // folders opened before stay open (their trees load lazily)
   const openRoots = readSet(ROOTS_KEY);
   tree.querySelectorAll("details[data-root]").forEach((d) => { if (openRoots.has(d.dataset.root) && !d.open) d.open = true; });

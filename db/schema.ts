@@ -76,6 +76,36 @@ export const answers = sqliteTable("decision_answers", {
   page: text("page").notNull().default(""),
 }, (t) => [index("answers_decision").on(t.project, t.decisionId, t.at)]);
 
+// Edit requests: the person edits a file on artipeek's edit view, and artipeek hands the new text to the folder's
+// agent instead of writing the file. The agent updates the file itself, then marks the request done or declined.
+//   pending     sent, waiting for the agent
+//   done        the agent updated the file (or the file came to have exactly the person's text)
+//   declined    the agent didn't (its note says why)
+//   superseded  the person sent a newer edit of the same file (that one's "replaces" names this one)
+//   withdrawn   the person put the file's text back and sent that: leave the file as it is
+export const EDIT_STATUSES = ["pending", "done", "declined", "superseded", "withdrawn"] as const;
+export type EditStatus = (typeof EDIT_STATUSES)[number];
+export const edits = sqliteTable("edit_requests", {
+  project: text("project").notNull(),
+  id: text("id").notNull(), // E1, E2…: unique within the project (decisions included), never reused
+  path: text("path").notNull(), // the file, relative to the project folder
+  base: text("base").notNull(), // the file's text when the edit was sent
+  baseSha: text("base_sha").notNull(),
+  text: text("text").notNull(), // the person's new text
+  textSha: text("text_sha").notNull(),
+  note: text("note"), // the person's note to the agent
+  replaces: text("replaces"), // the pending edit of the same file this one superseded
+  by: text("by").notNull(),
+  status: text("status").$type<EditStatus>().notNull().default("pending"),
+  resolution: text("resolution"), // the agent's note (or artipeek's, when the file came to have the text)
+  resolvedBy: text("resolved_by").$type<"agent" | "artipeek" | "person">(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.project, t.id] }),
+  index("edits_path").on(t.project, t.path, t.status),
+]);
+
 // Push (iOS app): the person's devices. Added only by the person (a login or an answer device), never by an agent.
 // scope: "public" = registered through the public listener, so it only hears about the public folders.
 export const pushDevices = sqliteTable("push_devices", {

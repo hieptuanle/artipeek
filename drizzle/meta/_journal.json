@@ -15,6 +15,13 @@
       "when": 1795193470523,
       "tag": "0001_push",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795228564428,
+      "tag": "0002_edits",
+      "breakpoints": true
     }
   ]
 }

@@ -47,7 +47,7 @@ flowchart TB
   apns -.->|"push + quick buttons"| you
 ```
 
-Agents raise and update questions in the [Decision hub](#decision-hub), and hand-work checklists as [Actions](#actions), using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers or tick steps. Only you can answer or tick action steps, via artipeek's pages and confirm sheets (see [Answer buttons](#answer-buttons-optional)), a notification action button, or Apple Watch.
+Agents raise and update questions in the [Decision hub](#decision-hub), and hand-work checklists as [Actions](#actions), using a per-folder token over `127.0.0.1` or Tailscale—tokens are refused on the public listener and can never submit answers or tick steps. Only you can answer or tick action steps, on artipeek's pages and confirm sheets (see [Answer buttons](#answer-buttons-optional)); answers can also come from a notification action button or the Apple Watch.
 
 ```mermaid
 sequenceDiagram
